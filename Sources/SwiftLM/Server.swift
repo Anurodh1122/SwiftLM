@@ -3866,6 +3866,7 @@ func handleTextNonStreaming(
 ) async throws -> Response {
     var fullText = ""
     var completionTokenCount = 0
+    var generationStopReason: GenerateStopReason = .stop
     let stopWindow = stopScanWindow(stopSequences)
     generationLoop: for await generation in stream {
         switch generation {
@@ -3883,6 +3884,7 @@ func handleTextNonStreaming(
                 try? await Task.sleep(for: .microseconds(50))
             }
         case .info(let info):
+            generationStopReason = info.stopReason
             completionTokenCount = info.generationTokenCount  // real count; see handleChatStreaming
         case .toolCall, .rejectedToolCall:
             break
@@ -3892,7 +3894,17 @@ func handleTextNonStreaming(
     await stats.requestFinished(tokens: completionTokenCount, duration: duration)
     slot.release()
 
-    var finishReason = "stop"
+    // Same mapping as handleChatNonStreaming (#227). This path used to hardcode "stop",
+    // so a completion cut off by max_tokens was reported as a natural end; the
+    // streaming text path and both chat paths already said "length". A stop sequence
+    // still wins below, whatever ended generation.
+    var finishReason: String
+    switch generationStopReason {
+    case .length:
+        finishReason = "length"
+    default:
+        finishReason = "stop"
+    }
     if let (trimmedText, _) = checkStopSequences(fullText, stopSequences: stopSequences) {
         fullText = trimmedText
         finishReason = "stop"

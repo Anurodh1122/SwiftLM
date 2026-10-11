@@ -295,7 +295,6 @@ fi
 # A client cannot tell a truncated completion from a finished one except through
 # `finish_reason`, so each response path must report "length" when max_tokens ended it.
 # Found by review: the non-streaming /v1/completions path hardcoded "stop" (#227).
-# The non-streaming /v1/completions case is asserted alongside that fix.
 SSE_FINISH='
 import json,sys
 reason=None
@@ -321,6 +320,11 @@ R=$(curl -sf -N "$URL/v1/chat/completions" -H 'Content-Type: application/json' \
 R=$(curl -sf -N "$URL/v1/completions" -H 'Content-Type: application/json' \
     -d "{\"model\":\"x\",\"prompt\":\"$LONG_ASK\",\"max_tokens\":5,\"temperature\":0,\"stream\":true}" | python3 -c "$SSE_FINISH")
 [ "$R" = "length" ] && pass "completions, streaming: finish_reason=length" || fail "completions, streaming: finish_reason=$R (expected length)"
+
+R=$(curl -sf "$URL/v1/completions" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"x\",\"prompt\":\"$LONG_ASK\",\"max_tokens\":5,\"temperature\":0}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["finish_reason"])')
+[ "$R" = "length" ] && pass "completions, non-streaming: finish_reason=length" || fail "completions, non-streaming: finish_reason=$R (expected length; #227)"
 
 # ── 12. A stop sequence ends generation, and usage only counts what was generated ──
 # The streaming paths stop at the match. The non-streaming ones used to keep generating
