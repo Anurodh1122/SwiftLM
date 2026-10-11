@@ -291,6 +291,90 @@ else
     fail "got HTTP $CODE with error '$ERR_TYPE' (expected 400 invalid_request_error stop)"
 fi
 
+# ── 11. finish_reason says when the model was cut off ─────────────────────────
+# A client cannot tell a truncated completion from a finished one except through
+# `finish_reason`, so each response path must report "length" when max_tokens ended it.
+# Found by review: the non-streaming /v1/completions path hardcoded "stop" (#227).
+# The non-streaming /v1/completions case is asserted alongside that fix.
+SSE_FINISH='
+import json,sys
+reason=None
+for line in sys.stdin:
+    line=line.strip()
+    if not line.startswith("data: ") or line=="data: [DONE]": continue
+    try: d=json.loads(line[6:])
+    except Exception: continue
+    for ch in d.get("choices",[]):
+        if ch.get("finish_reason"): reason=ch["finish_reason"]
+print(reason)'
+LONG_ASK="Write a very long story about a dragon, at least five hundred words."
+
+log "Test 11: finish_reason is \"length\" when max_tokens ends a chat completion"
+R=$(chat "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"$LONG_ASK\"}],\"max_tokens\":5,\"temperature\":0}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["finish_reason"])')
+[ "$R" = "length" ] && pass "chat, non-streaming: finish_reason=length" || fail "chat, non-streaming: finish_reason=$R (expected length)"
+
+R=$(curl -sf -N "$URL/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"$LONG_ASK\"}],\"max_tokens\":5,\"temperature\":0,\"stream\":true}" | python3 -c "$SSE_FINISH")
+[ "$R" = "length" ] && pass "chat, streaming: finish_reason=length" || fail "chat, streaming: finish_reason=$R (expected length)"
+
+R=$(curl -sf -N "$URL/v1/completions" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"x\",\"prompt\":\"$LONG_ASK\",\"max_tokens\":5,\"temperature\":0,\"stream\":true}" | python3 -c "$SSE_FINISH")
+[ "$R" = "length" ] && pass "completions, streaming: finish_reason=length" || fail "completions, streaming: finish_reason=$R (expected length)"
+
+# ── 12. A stop sequence ends generation, and usage only counts what was generated ──
+# The streaming paths stop at the match. The non-streaming ones used to keep generating
+# to max_tokens or EOS and cut the text afterwards, so the same request billed far more
+# completion_tokens (and spent the compute) when it was not streamed.
+log "Test 12: completion_tokens after a stop sequence agree between streaming and non-streaming"
+STOP_ASK="Write the numbers one to twenty as English words separated by commas, nothing else."
+STOP_WORD="Five"
+BASE_REQ="\"model\":\"x\",\"messages\":[{\"role\":\"user\",\"content\":\"$STOP_ASK\"}],\"max_tokens\":120,\"temperature\":0"
+# The assertion is only meaningful if the stop sequence would actually fire, so check
+# the unconstrained reply contains it first; that is a model capability, not a contract.
+BASE_TEXT=$(chat "{$BASE_REQ}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"].get("content") or "")')
+if ! echo "$BASE_TEXT" | grep -q "$STOP_WORD"; then
+    skip "model's reply never contained '$STOP_WORD', so the stop sequence cannot fire"
+else
+    NS_TOKENS=$(chat "{$BASE_REQ,\"stop\":[\"$STOP_WORD\"]}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["usage"]["completion_tokens"])')
+    ST_TOKENS=$(curl -sf -N "$URL/v1/chat/completions" -H 'Content-Type: application/json' \
+        -d "{$BASE_REQ,\"stop\":[\"$STOP_WORD\"],\"stream\":true,\"stream_options\":{\"include_usage\":true}}" | python3 -c '
+import json,sys
+n=None
+for line in sys.stdin:
+    line=line.strip()
+    if not line.startswith("data: ") or line=="data: [DONE]": continue
+    try: d=json.loads(line[6:])
+    except Exception: continue
+    if d.get("usage"): n=d["usage"]["completion_tokens"]
+print(n)')
+    # The streamed count is a chunk count and can trail the real one by a few buffered tokens.
+    if [ -n "$NS_TOKENS" ] && [ "$ST_TOKENS" != "None" ] && [ "$NS_TOKENS" -le $((ST_TOKENS + 4)) ]; then
+        pass "stop at '$STOP_WORD': non-streaming $NS_TOKENS vs streaming $ST_TOKENS completion tokens"
+    else
+        fail "stop at '$STOP_WORD': non-streaming reports $NS_TOKENS completion tokens, streaming $ST_TOKENS — the non-streaming path kept generating past the stop sequence"
+    fi
+fi
+
+log "Test 12b: /v1/completions stops generating at a stop sequence (non-streaming)"
+COMP_PROMPT="Numbers in words: One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Ten, Eleven, Twelve. Again:"
+comp_req() { curl -sf "$URL/v1/completions" -H 'Content-Type: application/json' -d "$1"; }
+COMP_BASE=$(comp_req "{\"model\":\"x\",\"prompt\":\"$COMP_PROMPT\",\"max_tokens\":60,\"temperature\":0}")
+COMP_BASE_TEXT=$(echo "$COMP_BASE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["text"])')
+if ! echo "$COMP_BASE_TEXT" | grep -q "Five"; then
+    skip "the completion never contained 'Five', so the stop sequence cannot fire"
+else
+    COMP_STOP=$(comp_req "{\"model\":\"x\",\"prompt\":\"$COMP_PROMPT\",\"max_tokens\":60,\"temperature\":0,\"stop\":[\"Five\"]}")
+    COMP_BASE_N=$(echo "$COMP_BASE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["usage"]["completion_tokens"])')
+    COMP_STOP_N=$(echo "$COMP_STOP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["usage"]["completion_tokens"])')
+    COMP_STOP_TEXT=$(echo "$COMP_STOP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["text"])')
+    if [ "$COMP_STOP_N" -lt "$COMP_BASE_N" ] && ! echo "$COMP_STOP_TEXT" | grep -q "Five"; then
+        pass "completions stop at 'Five': $COMP_STOP_N tokens vs $COMP_BASE_N without the stop"
+    else
+        fail "completions stop at 'Five': $COMP_STOP_N tokens vs $COMP_BASE_N without the stop (text: $(echo "$COMP_STOP_TEXT" | head -c 60))"
+    fi
+fi
+
 log "═══════════════════════════════════════"
 log "Results: $PASS passed, $FAIL failed, $SKIP skipped, $TOTAL total"
 log "═══════════════════════════════════════"

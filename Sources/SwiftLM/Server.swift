@@ -3444,11 +3444,21 @@ func handleChatNonStreaming(
     var tcIndex = 0
     var generationStopReason: GenerateStopReason = .stop
     var firstToken = true
-    for await generation in stream {
+    let stopWindow = stopScanWindow(stopSequences)
+    generationLoop: for await generation in stream {
         switch generation {
         case .chunk(let text, _):
             fullText += text
             completionTokenCount += 1
+            // End generation at the first stop sequence, as the streaming path does. The
+            // text is trimmed below either way; continuing only spends compute and bills
+            // the client for tokens that are discarded. `.info` never arrives on this
+            // exit, so the count stays the chunk count.
+            if !stopSequences.isEmpty,
+               checkStopSequences(fullText, stopSequences: stopSequences, lookback: stopWindow + text.count) != nil
+            {
+                break generationLoop
+            }
             // GPU yield: prevent Metal from starving macOS WindowServer
             if completionTokenCount % 8 == 0 {
                 try? await Task.sleep(for: .microseconds(50))
@@ -3856,11 +3866,18 @@ func handleTextNonStreaming(
 ) async throws -> Response {
     var fullText = ""
     var completionTokenCount = 0
-    for await generation in stream {
+    let stopWindow = stopScanWindow(stopSequences)
+    generationLoop: for await generation in stream {
         switch generation {
         case .chunk(let text, _):
             fullText += text
             completionTokenCount += 1
+            // See handleChatNonStreaming: stop generating at the first stop sequence.
+            if !stopSequences.isEmpty,
+               checkStopSequences(fullText, stopSequences: stopSequences, lookback: stopWindow + text.count) != nil
+            {
+                break generationLoop
+            }
             // GPU yield: prevent Metal from starving macOS WindowServer
             if completionTokenCount % 8 == 0 {
                 try? await Task.sleep(for: .microseconds(50))
