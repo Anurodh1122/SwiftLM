@@ -50,7 +50,8 @@ private struct TransformersTokenizerLoader: TokenizerLoader, Sendable {
     init(modelId: String = "this model") { self.modelId = modelId }
 
     func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
-        let effectiveDirectory = Self.remappingUnigramTokenizerClassIfNeeded(in: directory, modelId: modelId)
+        let unigramRemapped = Self.remappingUnigramTokenizerClassIfNeeded(in: directory, modelId: modelId)
+        let effectiveDirectory = remappingBPECompatibleTokenizerClassIfNeeded(in: unigramRemapped, modelId: modelId)
         let t = try await AutoTokenizer.from(modelFolder: effectiveDirectory)
         return TransformersTokenizerBridge(t, modelId: modelId)
     }
@@ -130,6 +131,61 @@ private struct TransformersTokenizerLoader: TokenizerLoader, Sendable {
                 + "so it resolves to UnigramTokenizer instead of crashing in BPETokenizer.")
         return scratchDirectory
     }
+}
+
+/// `tokenizer_class` values that swift-transformers does not list in its `knownTokenizers`
+/// table but whose `tokenizer.json` is the same byte-level BPE as GPT-2, so `BPETokenizer`
+/// loads them correctly. Loading such a checkpoint otherwise fails with
+/// `unsupportedTokenizer("GPTNeoXTokenizer")` before the server starts (OLMoE, GPT-NeoX
+/// and Pythia derivatives).
+let bpeCompatibleTokenizerClasses: Set<String> = ["GPTNeoXTokenizer"]
+
+/// Returns `directory` unchanged unless its `tokenizer_class` is one of
+/// `bpeCompatibleTokenizerClasses` *and* `tokenizer.json` declares a BPE model. In that
+/// case it returns a scratch copy, original files symlinked so the HF cache is untouched,
+/// whose `tokenizer_config.json` says `GPT2Tokenizer`, which swift-transformers maps to
+/// `BPETokenizer`. Checking `model.type` keeps a mislabelled Unigram or WordPiece
+/// checkpoint from being forced into the BPE implementation.
+///
+/// Same mechanism as `TransformersTokenizerLoader.remappingUnigramTokenizerClassIfNeeded`;
+/// delete both once swift-transformers selects the implementation from `model.type`.
+func remappingBPECompatibleTokenizerClassIfNeeded(in directory: URL, modelId: String) -> URL {
+    let tokenizerDataURL = directory.appendingPathComponent("tokenizer.json")
+    let tokenizerConfigURL = directory.appendingPathComponent("tokenizer_config.json")
+    guard
+        let tokenizerData = try? Data(contentsOf: tokenizerDataURL),
+        let tokenizerJSON = try? JSONSerialization.jsonObject(with: tokenizerData) as? [String: Any],
+        (tokenizerJSON["model"] as? [String: Any])?["type"] as? String == "BPE",
+        let configData = try? Data(contentsOf: tokenizerConfigURL),
+        var configJSON = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
+        let declared = configJSON["tokenizer_class"] as? String,
+        bpeCompatibleTokenizerClasses.contains(declared.replacingOccurrences(of: "Fast", with: ""))
+    else {
+        return directory
+    }
+
+    let scratchDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("swiftlm-bpe-tokenizer-\(UUID().uuidString)", isDirectory: true)
+    do {
+        try FileManager.default.createDirectory(at: scratchDirectory, withIntermediateDirectories: true)
+        let contents = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        for fileURL in contents where fileURL.lastPathComponent != "tokenizer_config.json" {
+            try FileManager.default.createSymbolicLink(
+                at: scratchDirectory.appendingPathComponent(fileURL.lastPathComponent),
+                withDestinationURL: fileURL)
+        }
+        configJSON["tokenizer_class"] = "GPT2Tokenizer"
+        let rewritten = try JSONSerialization.data(withJSONObject: configJSON, options: [.prettyPrinted])
+        try rewritten.write(to: scratchDirectory.appendingPathComponent("tokenizer_config.json"))
+    } catch {
+        // Best-effort, as for the Unigram remap: fall back to the original directory and
+        // let the loader report its own error.
+        return directory
+    }
+
+    print("[SwiftLM] \(modelId): tokenizer_class \"\(declared)\" is not in swift-transformers' table; "
+        + "tokenizer.json is byte-level BPE, so loading it as GPT2Tokenizer.")
+    return scratchDirectory
 }
 
 /// A chat template that the Jinja parser rejected.
