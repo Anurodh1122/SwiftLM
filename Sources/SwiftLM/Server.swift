@@ -684,6 +684,13 @@ struct MLXServer: AsyncParsableCommand {
             setenv("SWIFTLM_MTP_ENABLE", "1", 1)
         }
 
+        // SSD expert streaming keeps one persistent pread buffer set per layer, so
+        // concurrent requests overwrite each other's experts and corrupt the heap.
+        if self.streamExperts && self.parallel > 1 {
+            print("[SwiftLM] Warning: --stream-experts supports one request at a time; ignoring --parallel \(self.parallel) and using 1.")
+            self.parallel = 1
+        }
+
         if self.promptCacheEntries < 1 {
             print("[SwiftLM] Warning: --prompt-cache-entries must be at least 1, got \(self.promptCacheEntries). Using 1.")
             self.promptCacheEntries = 1
