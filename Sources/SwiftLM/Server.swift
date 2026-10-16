@@ -3118,6 +3118,33 @@ func startSSEKeepalive(
     }
 }
 
+/// What a JSON-mode stream sends for its buffered opening: the reply itself, unless a
+/// complete object precedes a second one; then the first is a hallucinated prefix and
+/// only the text from the second `{` on goes out. The earlier rule cut at the second `{`
+/// wherever it was, which turned `{"user": {"name": "Bob"}}` into `{"name": "Bob"}}`
+/// (#233). Braces are counted without regard to strings: this guards against a stray
+/// leading object, it is not a JSON parser.
+func jsonModeFlushText(_ buffered: String) -> String {
+    let trimmed = buffered.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.hasPrefix("{") else { return trimmed }
+    var depth = 0
+    for i in trimmed.indices {
+        switch trimmed[i] {
+        case "{": depth += 1
+        case "}": depth -= 1
+        default: continue
+        }
+        if depth == 0 {
+            let rest = trimmed[trimmed.index(after: i)...]
+            if let next = rest.firstIndex(of: "{") {
+                return String(trimmed[next...])
+            }
+            return trimmed
+        }
+    }
+    return trimmed
+}
+
 func handleChatStreaming(
     startGeneration: @escaping () async throws -> (AsyncStream<Generation>, (() async -> Void)?),
     modelId: String,
@@ -3226,6 +3253,31 @@ func handleChatStreaming(
         // ── JSON mode streaming: buffer early tokens to strip hallucinated prefixes ──
         var jsonBuffering = jsonMode
         var jsonBuffer = ""
+        // Hands the buffered text to the client, once: at the flush threshold, or at the
+        // end of a stream that never reached it. The thresholds count chunks, and a reply
+        // that starts with `{` is held by the generator as a possible bare tool call until
+        // generation ends, so it usually arrives as one chunk; without the end-of-stream
+        // flush a JSON-mode stream carried no content at all (#233).
+        func flushJSONBuffer() {
+            guard jsonBuffering else { return }
+            jsonBuffering = false
+            let cleaned = jsonModeFlushText(jsonBuffer)
+            jsonBuffer = ""
+            let (rText, cText) = enableThinking ? tracker.process(cleaned) : ("", cleaned)
+            if !rText.isEmpty || !cText.isEmpty {
+                cont.yield(sseChunk(
+                    modelId: modelId,
+                    reasoningContent: rText.isEmpty ? nil : rText,
+                    content: cText.isEmpty ? nil : cText,
+                    finishReason: nil
+                ))
+            }
+            // Everything accumulated so far has now gone to the client, so
+            // the stop path must not re-emit it. Counting raw characters
+            // consumed (not the cleaned derivative that went on the wire)
+            // keeps this consistent with how the normal path counts.
+            emittedTextCount = fullText.count
+        }
 
         for await generation in stream {
             if stopped { break }
@@ -3265,32 +3317,8 @@ func handleChatStreaming(
                     let enoughTokens = completionTokenCount >= 3
                     let hitMax = completionTokenCount >= 32
                     let hasDoubleBrace = enoughTokens && trimmed.hasPrefix("{") && trimmed.dropFirst().contains("{")
-
                     if hitMax || hasDoubleBrace {
-                        var cleaned = trimmed
-                        if hasDoubleBrace {
-                            if let firstBrace = cleaned.firstIndex(of: "{") {
-                                let afterFirst = cleaned.index(after: firstBrace)
-                                if let secondBrace = cleaned[afterFirst...].firstIndex(of: "{") {
-                                    cleaned = String(cleaned[secondBrace...])
-                                }
-                            }
-                        }
-                        let (rText, cText) = enableThinking ? tracker.process(cleaned) : ("", cleaned)
-                        if !rText.isEmpty || !cText.isEmpty {
-                            cont.yield(sseChunk(
-                                modelId: modelId,
-                                reasoningContent: rText.isEmpty ? nil : rText,
-                                content: cText.isEmpty ? nil : cText,
-                                finishReason: nil
-                            ))
-                        }
-                        // Everything accumulated so far has now gone to the client, so
-                        // the stop path must not re-emit it. Counting raw characters
-                        // consumed (not the cleaned derivative that went on the wire)
-                        // keeps this consistent with how the normal path counts.
-                        emittedTextCount = fullText.count
-                        jsonBuffering = false
+                        flushJSONBuffer()
                     }
                     continue  // skip normal emit while buffering or just flushed
                 }
@@ -3400,6 +3428,9 @@ func handleChatStreaming(
                     case .cancelled, .stop:
                         reason = hasToolCalls ? "tool_calls" : "stop"
                     }
+                    // A JSON-mode reply shorter than the flush threshold is still in the
+                    // buffer; it goes out before the finish chunk.
+                    flushJSONBuffer()
                     // The withheld tail never became a stop sequence, so it is ordinary
                     // output and must not be dropped.
                     if !heldStopTail.isEmpty {
@@ -3460,7 +3491,11 @@ func handleChatStreaming(
         }
         // Safety net: the tail is normally released in `case .info`, but a stream that
         // ends without one — a generation error, or cancellation mid-decode — would
-        // otherwise discard up to maxStopLength-1 characters of real output.
+        // otherwise discard up to maxStopLength-1 characters of real output, and in
+        // JSON mode the whole buffered reply.
+        if !stopped {
+            flushJSONBuffer()
+        }
         if !stopped && !heldStopTail.isEmpty {
             let (r, c) = enableThinking ? tracker.process(heldStopTail) : ("", heldStopTail)
             heldStopTail = ""

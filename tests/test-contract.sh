@@ -379,6 +379,34 @@ else
     fi
 fi
 
+# ── 13. JSON mode streams its reply ─────────────────────────────────────────
+# A JSON-mode reply is buffered so a hallucinated prefix can be dropped, and the buffer
+# was never flushed when the stream ended. The generator holds a `{`-led reply as a
+# possible tool call and delivers it as one chunk, so a JSON-mode stream sent nothing
+# while the non-streaming twin was fine (#233).
+log "Test 13: json_object mode streams the content it returns non-streaming"
+JSON_REQ='"model":"x","messages":[{"role":"user","content":"Return exactly this JSON and nothing else: {\"ok\": true}"}],"max_tokens":60,"temperature":0,"response_format":{"type":"json_object"}'
+NS_JSON=$(chat "{$JSON_REQ}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["choices"][0]["message"].get("content") or "")')
+ST_JSON=$(curl -sf -N "$URL/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d "{$JSON_REQ,\"stream\":true}" | python3 -c '
+import json,sys
+out=[]
+for line in sys.stdin:
+    line=line.strip()
+    if not line.startswith("data: ") or line=="data: [DONE]": continue
+    try: d=json.loads(line[6:])
+    except Exception: continue
+    for c in d.get("choices",[]):
+        out.append(c.get("delta",{}).get("content") or "")
+print("".join(out))')
+if [ -z "$ST_JSON" ]; then
+    fail "json_object stream carried no content (non-streaming returned: $(echo "$NS_JSON" | head -c 60))"
+elif [ "$ST_JSON" = "$NS_JSON" ]; then
+    pass "json_object stream matches the non-streaming content: $(echo "$ST_JSON" | head -c 60)"
+else
+    fail "json_object stream differs from non-streaming: '$(echo "$ST_JSON" | head -c 60)' vs '$(echo "$NS_JSON" | head -c 60)'"
+fi
+
 log "═══════════════════════════════════════"
 log "Results: $PASS passed, $FAIL failed, $SKIP skipped, $TOTAL total"
 log "═══════════════════════════════════════"
