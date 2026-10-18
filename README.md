@@ -51,6 +51,39 @@ Then start the server (models download automatically if not cached):
 
 *(Add `--stream-experts` when running oversized MoE models to bypass macOS virtual memory swapping and stream expert layers directly from NVMe SSD.)*
 
+### Run the Tests
+
+```bash
+make test
+```
+
+That is the supported entry point. It is a thin wrapper over:
+
+```bash
+./scripts/bootstrap_local_tests.sh   # build the harness, make mlx.metallib findable
+swift test --skip-build
+```
+
+Do **not** trust a bare `swift test` on a fresh checkout. MLX aborts the test process when it
+cannot load its Metal library, and `swift test` can still exit 0 after printing
+`Failed to load the default metallib` — on the pre-6.4 layout that happens at the second
+test, so the run looks like a short green pass with almost nothing executed. `make test`
+runs the bootstrap and then **fails if fewer than 200 tests executed**, so this failure mode
+is reported instead of hidden.
+
+The bootstrap handles both toolchains automatically:
+
+- **Swift 6.4+ (Xcode 27)** — SwiftPM compiles the Cmlx kernels and embeds `default.metallib`
+  in each test bundle, so nothing is copied. It only checks the Metal Toolchain is installed
+  (`xcodebuild -downloadComponent MetalToolchain` if it is not). Copying a metallib into
+  `<bundle>.xctest/Contents/MacOS` here invalidates the bundle signature and breaks the next
+  incremental build at CodeSign.
+- **Swift 6.2 (Xcode 26, the CI runner)** — the metallib is not embedded; the bootstrap
+  fetches `mlx.metallib` from the `mlx` Python wheel and copies it next to the test binaries.
+
+To run a subset, `make test-filter FILTER=PromptCacheTests` (or pass `swift test` arguments
+to `scripts/run-tests.sh` directly).
+
 ## 📊 Performance: Mac mini M6 (base, 32 GB)
 
 The first SwiftLM numbers from a **32 GB** Mac. Every other table in this README comes from 64 GB hardware. Running the same context lengths on this M6 exposed memory bugs that 64 GB machines had been hiding, and they are fixed in this release (see [What 32 GB exposed](#what-32-gb-exposed)).
