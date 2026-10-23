@@ -1228,7 +1228,7 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
                 .tint(SwiftBuddyTheme.accent)
             }
-            Text("Once a chat's prompt is longer than this, the oldest messages are left out. Keeps long chats fast and their memory use bounded; the model's own maximum is \(engine.maxContextWindow > 0 ? "\(engine.maxContextWindow) tokens" : "shown once a model is loaded"). The chat's persona and tool instructions alone take about 2K tokens.")
+            Text("Older messages are dropped past this length.")
                 .font(.caption2)
                 .foregroundStyle(SwiftBuddyTheme.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
