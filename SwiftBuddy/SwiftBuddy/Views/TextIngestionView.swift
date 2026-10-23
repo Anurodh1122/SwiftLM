@@ -58,7 +58,7 @@ struct TextIngestionView: View {
                         }
                     }
                     .padding(24)
-                    .background(Color(nsColor: .controlBackgroundColor))
+                    .background(SwiftBuddyTheme.surface)
                     .cornerRadius(12)
                     .overlay(
                         RoundedRectangle(cornerRadius: 12)

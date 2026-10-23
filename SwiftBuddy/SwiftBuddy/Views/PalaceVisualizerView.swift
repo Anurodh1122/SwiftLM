@@ -86,7 +86,7 @@ struct WingNodeView: View {
         .padding(30)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+                .fill(SwiftBuddyTheme.surface.opacity(0.6))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
@@ -167,7 +167,7 @@ struct RoomNodeView: View {
                         .foregroundStyle(.secondary)
                 }
                 .frame(width: 140, height: 50)
-                .background(Color(nsColor: .controlBackgroundColor))
+                .background(SwiftBuddyTheme.surface)
                 .cornerRadius(6)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
@@ -230,7 +230,7 @@ struct RoomNodeView: View {
                     }
                     .padding(16)
                     .frame(width: 280)
-                    .background(Color(nsColor: .windowBackgroundColor).opacity(0.8))
+                    .background(SwiftBuddyTheme.background.opacity(0.8))
                     .cornerRadius(8)
                     .overlay(
                         RoundedRectangle(cornerRadius: 8)
