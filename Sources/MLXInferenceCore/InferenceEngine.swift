@@ -235,18 +235,8 @@ public final class InferenceEngine: ObservableObject {
     /// Expert cache slots per MoE layer when streaming on iOS (see `init`).
     static let expertCacheSlots = 16
 
-    /// Experts routed per token (`num_experts_per_tok`), at the top level or in `text_config`.
-    static func expertsPerToken(_ config: [String: Any]) -> Int? {
-        if let k = config["num_experts_per_tok"] as? Int { return k }
-        return (config["text_config"] as? [String: Any])?["num_experts_per_tok"] as? Int
-    }
-
-    private func localConfigForStreaming(modelId: String, explicitLocalDirectory: URL?) -> [String: Any]? {
-        if let explicitLocalDirectory {
-            return ModelStorage.readModelConfig(inDirectory: explicitLocalDirectory)
-        }
-        return ModelStorage.readModelConfig(for: modelId)
-    }
+    /// Largest prompt step while streaming experts on iOS (see `loadVerifiedModel`).
+    static let maxStreamingPrefillStep = 32
 
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
@@ -576,13 +566,13 @@ public final class InferenceEngine: ObservableObject {
                     }()
                 )
                 #if os(iOS)
-                // As many prompt tokens per step as the expert cache can hold at once:
-                // a step routing more experts than there are cache slots falls back to a
-                // path whose buffers grow to tokens × top-k per layer (32 slots at 4
-                // tokens, ~2 GB on the 35B-A3B, which is what ran out of memory before).
-                let topK = (localConfigForStreaming(modelId: modelId, explicitLocalDirectory: explicitLocalDirectory)
-                    .flatMap(Self.expertsPerToken)) ?? 8
-                streamingPrefillStepSize = max(1, Self.expertCacheSlots / max(topK, 1))
+                // The Prefill setting, at most 32 tokens per step. A step with more expert
+                // picks than the cache has slots reads exactly the experts it needs and
+                // frees them after each layer (patched in the IPA build; it used to grow
+                // permanent per-layer buffers, ~2 GB at 4 tokens on the 35B-A3B). Larger
+                // steps read each expert once for many tokens; 32 keeps the per-layer
+                // peak to the experts 32 tokens pick (~0.3 GB on the 35B-A3B).
+                streamingPrefillStepSize = Self.maxStreamingPrefillStep
                 #endif
                 print("[InferenceEngine] SSD expert streaming: enabled (isMoE=\(isMoE), persisted=\(GenerationConfig.hasPersistedConfig), setting=\(generationConfig.streamExperts), prefill chunk=\(streamingPrefillStepSize.map { "\($0)" } ?? "default"))")
             } else {

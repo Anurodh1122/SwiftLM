@@ -154,6 +154,20 @@ jobs:
           elif "SSD Sync: GPU drained" in src:
               sys.exit("Unexpected SSD Sync logging in " + path + "; update the patch step.")
 
+          # Route a step with more expert picks than the LRU cache has slots to the prompt
+          # path (exact, per-call buffers freed after each layer) instead of the per-layer
+          # persistent buffers, which grow to the pick count for good: 32 picks there is
+          # ~2 GB on the 35B-A3B. The cache path itself must not see more picks than slots:
+          # it gives up mid-way and leaves slots marked with experts it never read.
+          for old, new in [
+              ("        guard idx.size <= 32,\n", "        guard idx.size <= SwitchGLU.MAX_CACHE_SLOTS,\n"),
+              ("            if idx.size <= 32 {\n", "            if idx.size <= SwitchGLU.MAX_CACHE_SLOTS {\n"),
+          ]:
+              if src.count(old) == 1:
+                  src = src.replace(old, new)
+              elif src.count(new) != 1:
+                  sys.exit(f"Expected {old.strip()!r} once in {path}; update the patch step.")
+
           open(path, "w", encoding="utf-8").write(src)
           print("patched", path)
           PY
