@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Embedded by build-ipa.yml with an ad-hoc signature, so a sideloading tool
+	     (Sideloadly, AltStore) sees it and can request it when it re-signs the app.
+	     Raises the memory ceiling iOS enforces on the app. Whether a free Apple ID may
+	     grant it is up to Apple; Settings > About > App Memory shows the limit in effect. -->
+	<key>com.apple.developer.kernel.increased-memory-limit</key>
+	<true/>
+</dict>
+</plist>

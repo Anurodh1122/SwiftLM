@@ -232,7 +232,7 @@ final class ServerManager: ObservableObject {
 
                         let sseStream = AsyncStream<ByteBuffer> { cont in
                             let producer = Task {
-                                for await token in await engine.generate(messages: chatMessages, config: reqConfig) {
+                                for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api) {
                                     let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\(jsonEscape(token.text))\"},\"finish_reason\":null}]}"
                                     cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
                                 }
@@ -249,7 +249,7 @@ final class ServerManager: ObservableObject {
                     } else {
                         // ── Non-streaming: collect full response ────────────
                         var fullText = ""
-                        for await token in await engine.generate(messages: chatMessages, config: reqConfig) {
+                        for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api) {
                             fullText += token.text
                         }
                         let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\(jsonEscape(fullText))\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}"

@@ -100,13 +100,27 @@ final class ChatViewModel: ObservableObject {
                 var response = ""
                 var thinking = ""
                 var hasRawThinkTags = false
+                // What the bubble should show, published at most ~12 times a second:
+                // re-rendering the whole Markdown reply on every token made long replies
+                // stutter.
+                var liveText = ""
+                var liveThinking: String? = nil
+                var lastPublish = Date.distantPast
 
                 for await token in engine.generate(messages: latestMessages, config: config) {
                     guard !Task.isCancelled else { break }
+                    defer {
+                        let now = Date()
+                        if now.timeIntervalSince(lastPublish) >= 0.08 {
+                            lastPublish = now
+                            streamingText = liveText
+                            thinkingText = liveThinking
+                        }
+                    }
 
                     if token.isThinking {
                         thinking += token.text
-                        thinkingText = thinking
+                        liveThinking = thinking
                     } else {
                         response += token.text
                         
@@ -120,31 +134,31 @@ final class ChatViewModel: ObservableObject {
                                let endRange = response.range(of: "</think>") {
                                 // Extract thinking
                                 let rawThinking = String(response[startRange.upperBound..<endRange.lowerBound])
-                                thinkingText = rawThinking
+                                liveThinking = rawThinking
                                 
                                 // Remove the entire block from the visible response
                                 let before = String(response[..<startRange.lowerBound])
                                 let after = String(response[endRange.upperBound...])
-                                streamingText = before + after
+                                liveText = before + after
                             } else if let startRange = response.range(of: "<think>") {
                                 // We have a start tag but no end tag yet, it's currently generating the thought
                                 let rawThinking = String(response[startRange.upperBound...])
-                                thinkingText = rawThinking
+                                liveThinking = rawThinking
                                 
                                 // Only update streaming text with what came before
-                                streamingText = String(response[..<startRange.lowerBound])
+                                liveText = String(response[..<startRange.lowerBound])
                             }
                         } else if let endRange = response.range(of: "</think>") {
                             // The template pre-filled `<think>`, so the reply began inside the
                             // thought and only the closing tag arrives: move what came before
                             // it out of the answer.
                             hasRawThinkTags = true
-                            thinkingText = String(response[..<endRange.lowerBound])
+                            liveThinking = String(response[..<endRange.lowerBound])
                                 .trimmingCharacters(in: .whitespacesAndNewlines)
-                            streamingText = String(response[endRange.upperBound...])
+                            liveText = String(response[endRange.upperBound...])
                         } else if !hasRawThinkTags {
                             // Standard flow: no raw tags seen yet, just stream normally
-                            streamingText = response 
+                            liveText = response 
                         }
                     }
                 }
@@ -154,6 +168,10 @@ final class ChatViewModel: ObservableObject {
                 // duplicated it, could land it in the next conversation, and could even run a
                 // tool the user had just stopped.
                 if Task.isCancelled { return }
+                // Publish the last tokens the throttle held back; `thinkingText` is also
+                // what the committed message records below.
+                streamingText = liveText
+                thinkingText = liveThinking
 
                 // First, check if there's a tool call in the complete response
                 if let toolCall = ExtractionService.extractToolCall(from: response) {
@@ -250,6 +268,15 @@ final class ChatViewModel: ObservableObject {
         streamingText = ""
         thinkingText = nil
         isGenerating = false
+    }
+
+    /// Opens the conversation for `wing` (nil = the core chat) unless it is already open.
+    /// The chat screen calls this from `onAppear`, which also fires on every return to
+    /// it (switching tabs); reopening then stopped a reply in progress.
+    func openConversation(wing: String?) {
+        if activeSession != nil, currentWing == wing { return }
+        currentWing = wing
+        newConversation()
     }
 
     func newConversation() {

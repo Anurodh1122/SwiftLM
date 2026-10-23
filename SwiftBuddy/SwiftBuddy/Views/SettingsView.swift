@@ -1,6 +1,9 @@
 // SettingsView.swift — Full SwiftLM parameter dashboard + console log (iOS tab or macOS sheet)
 import Observation
 import SwiftUI
+#if os(iOS)
+import os
+#endif
 #if canImport(MLXInferenceCore)
 import MLXInferenceCore
 #endif
@@ -836,6 +839,14 @@ struct SettingsView: View {
                         #endif
                     }())
                     aboutRow("RAM", value: String(format: "%.0f GB", ramGB))
+                    #if os(iOS)
+                    // The ceiling iOS actually enforces on this app, which is what decides
+                    // whether a model fits — and shows whether the increased-memory-limit
+                    // entitlement took effect after sideloading.
+                    TimelineView(.periodic(from: .now, by: 2)) { _ in
+                        aboutRow("App Memory", value: AppMemory.summary())
+                    }
+                    #endif
                 }
 
                 parameterCard("Active Model") {
@@ -1296,3 +1307,29 @@ final class ConsoleLog {
         entries.removeAll()
     }
 }
+
+#if os(iOS)
+/// This app's memory use and the limit iOS enforces on it.
+enum AppMemory {
+    /// Bytes iOS counts against the app (the figure jetsam compares to the limit).
+    static func footprint() -> UInt64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? UInt64(info.phys_footprint) : 0
+    }
+
+    /// e.g. "1.2 of 5.8 GB" — used, then used plus what iOS still allows.
+    static func summary() -> String {
+        let used = footprint()
+        let limit = used + UInt64(os_proc_available_memory())
+        let gb = { (bytes: UInt64) in Double(bytes) / 1_073_741_824 }
+        return String(format: "%.1f of %.1f GB", gb(used), gb(limit))
+    }
+}
+#endif

@@ -130,9 +130,8 @@ struct RootView: View {
                         NavigationLink {
                             ChatView(viewModel: viewModel)
                                 .environmentObject(engine)
-                                .onAppear { 
-                                    viewModel.currentWing = nil
-                                    viewModel.newConversation()
+                                .onAppear {
+                                    viewModel.openConversation(wing: nil)
                                 }
                         } label: {
                             Label("Core System Chat", systemImage: "sparkles")
@@ -144,9 +143,8 @@ struct RootView: View {
                             NavigationLink {
                                 ChatView(viewModel: viewModel)
                                     .environmentObject(engine)
-                                    .onAppear { 
-                                        viewModel.currentWing = wing.name 
-                                        viewModel.newConversation()
+                                    .onAppear {
+                                        viewModel.openConversation(wing: wing.name)
                                     }
                             } label: {
                                 Label(wing.name, systemImage: "person.crop.circle")
@@ -251,10 +249,46 @@ struct RootView: View {
             .tag(Tab.settings)
         }
         .tint(SwiftBuddyTheme.accent)
+        // Graph synthesis runs for minutes. macOS covers the window with
+        // PersonaExtractionOverlay; that overlay has no way out, so iOS gets a slim strip
+        // instead and the app stays usable meanwhile.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if registry.isSyncing {
+                synthesisProgressStrip
+            }
+        }
         // Navigate to Models tab when a model load is requested from chat
         .onReceive(NotificationCenter.default.publisher(for: .showModelManagement)) { _ in
             selectedTab = .models
         }
+    }
+
+    private var synthesisProgressStrip: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(registry.lastSyncLog.isEmpty ? "Synthesizing graph…" : registry.lastSyncLog)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                    .lineLimit(1)
+                Spacer()
+                if registry.extractionTotal > 0 {
+                    Text("\(registry.extractionProcessed)/\(registry.extractionTotal)")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                }
+            }
+            if registry.extractionTotal > 0 {
+                ProgressView(
+                    value: Double(min(registry.extractionProcessed, registry.extractionTotal)),
+                    total: Double(registry.extractionTotal)
+                )
+                .tint(SwiftBuddyTheme.accent)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(SwiftBuddyTheme.surface)
     }
     #endif
 

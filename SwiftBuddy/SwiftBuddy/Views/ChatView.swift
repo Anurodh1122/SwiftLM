@@ -345,6 +345,9 @@ struct ChatView: View {
             } else {
                 bannerRow(icon: "exclamationmark.triangle.fill", text: msg, color: SwiftBuddyTheme.error)
             }
+        case .generating where engine.generationOrigin == .api && !viewModel.isGenerating:
+            // Sending is disabled until it finishes; say why.
+            bannerRow(icon: "network", text: "Answering an API request…", color: SwiftBuddyTheme.accent)
         case .ready, .generating:
             if engine.maxContextWindow > 0 && !viewModel.messages.isEmpty {
                 HStack {
@@ -512,7 +515,7 @@ struct ChatView: View {
                     .fill(engine.state.statusColor)
                     .frame(width: 7, height: 7)
             }
-            Text(engine.state.shortLabel)
+            Text(statusPillLabel)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 .lineLimit(1)
@@ -525,6 +528,14 @@ struct ChatView: View {
         .overlay(Capsule().strokeBorder(SwiftBuddyTheme.cardStroke, lineWidth: 1))
     }
     #endif
+
+    /// While generating, keep the model's name in view and say when the request came
+    /// from the local API server rather than this chat.
+    private var statusPillLabel: String {
+        guard case .generating = engine.state else { return engine.state.shortLabel }
+        let name = engine.loadedModelId.map { $0.components(separatedBy: "/").last ?? $0 } ?? "Model"
+        return engine.generationOrigin == .api ? "\(name) · API request" : "\(name) · Generating"
+    }
 
     #if os(macOS)
     @ToolbarContentBuilder

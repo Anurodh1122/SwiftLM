@@ -154,6 +154,25 @@ jobs:
           lipo -info "$EXEC" || true
           vtool -show-build "$EXEC" || true
 
+          # Embed the increased-memory-limit entitlement with an ad-hoc signature. An
+          # unsigned build carries no entitlements at all, so Sideloadly had nothing to
+          # request. Nested code is signed first (codesign rejects an app whose nested
+          # code is unsigned). Not fatal: without it the IPA still installs, just without
+          # the entitlement.
+          ENT="SwiftBuddy/Sideload.entitlements"
+          if (
+            for nested in "$APP"/Frameworks/*.framework "$APP"/Frameworks/*.dylib "$APP"/PlugIns/*.appex; do
+              [ -e "$nested" ] || continue
+              codesign --force --sign - --timestamp=none "$nested" || exit 1
+            done
+            codesign --force --sign - --timestamp=none --generate-entitlement-der \
+              --entitlements "$ENT" "$APP"
+          ); then
+            codesign -d --entitlements - "$APP" || true
+          else
+            echo "::warning::Could not embed $ENT; the IPA ships without the entitlement."
+          fi
+
           mkdir -p output/Payload
           cp -R "$APP" output/Payload/
           (cd output && zip -qry SwiftBuddy-unsigned.ipa Payload)

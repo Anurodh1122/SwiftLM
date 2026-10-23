@@ -78,6 +78,12 @@ public enum ModelState: Equatable, Sendable {
     case error(String)
 }
 
+/// Where a generation request came from.
+public enum GenerationOrigin: Sendable {
+    case app
+    case api
+}
+
 // MARK: — Thermal State
 
 public enum ThermalLevel: Sendable {
@@ -181,6 +187,9 @@ public final class InferenceEngine: ObservableObject {
     /// True from the start of `load(modelId:)` until it returns. Two loads at once would
     /// share the global SSD-streaming configuration and double peak memory.
     private var isLoadInFlight = false
+    /// Who started the generation that currently holds the turn, so the UI can say when
+    /// the model is busy answering the local API server rather than the chat.
+    @Published public private(set) var generationOrigin: GenerationOrigin = .app
 
     // All NotificationCenter observers collected for clean deregistration
     // nonisolated(unsafe): populated exclusively from MainActor init, read only in deinit
@@ -384,8 +393,27 @@ public final class InferenceEngine: ObservableObject {
 
         let task = downloadManager.startDownload(modelId: modelId)
 
+        // The download manager tracks the real progress; mirror it into `state`, which
+        // the Chat banner and the Models card show. Without this they sat at 0%
+        // "Preparing..." for the whole download.
+        let progressMirror = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                if let self, case .downloading = self.state,
+                    let progress = self.downloadManager.activeDownloads[modelId]
+                {
+                    self.state = .downloading(
+                        progress: progress.fractionCompleted,
+                        speed: progress.speedString.isEmpty ? "Downloading..." : progress.speedString
+                    )
+                }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
+        defer { progressMirror.cancel() }
+
         do {
             try await task.value
+            progressMirror.cancel()
             state = .downloading(progress: 1.0, speed: "Verifying...")
 
             guard ModelStorage.verifyModelIntegrity(for: modelId) else {
@@ -758,7 +786,8 @@ extension InferenceEngine {
 
     public nonisolated func generate(
         messages: [ChatMessage],
-        config: GenerationConfig = .default
+        config: GenerationConfig = .default,
+        origin: GenerationOrigin = .app
     ) -> AsyncStream<GenerationToken> {
         AsyncStream { continuation in
             let task: Task<Void, Never> = Task { @MainActor in
@@ -772,6 +801,7 @@ extension InferenceEngine {
                 if Task.isCancelled { continuation.finish(); return }
                 self.isGenerationActive = true
                 self.stopRequested = false
+                self.generationOrigin = origin
                 defer { self.isGenerationActive = false }
 
                 guard let container = self.container else {
