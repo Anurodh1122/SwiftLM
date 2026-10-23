@@ -218,17 +218,11 @@ struct ModelsView: View {
                 .environmentObject(engine)
         }
         .confirmationDialog(
-            "Delete \(pendingDeleteId.map { $0.components(separatedBy: "/").last ?? $0 } ?? "model")?",
-            isPresented: Binding(
-                get: { pendingDeleteId != nil },
-                set: { if !$0 { pendingDeleteId = nil } }
-            ),
+            deleteDialogTitle,
+            isPresented: deleteDialogPresented,
             titleVisibility: .visible
         ) {
-            Button("Delete", role: .destructive) {
-                if let id = pendingDeleteId { deleteModel(id) }
-                pendingDeleteId = nil
-            }
+            Button("Delete", role: .destructive, action: confirmPendingDelete)
             Button("Cancel", role: .cancel) { pendingDeleteId = nil }
         } message: {
             Text("This frees the storage it uses and can't be undone.")
@@ -244,6 +238,27 @@ struct ModelsView: View {
         } message: {
             Text(deleteErrorMessage ?? "")
         }
+    }
+
+    // Kept out of `body` so the compiler doesn't have to type-check them inline.
+    private var deleteDialogTitle: String {
+        guard let id = pendingDeleteId else { return "Delete model?" }
+        let name = id.components(separatedBy: "/").last ?? id
+        return "Delete \(name)?"
+    }
+
+    private var deleteDialogPresented: Binding<Bool> {
+        Binding<Bool>(
+            get: { pendingDeleteId != nil },
+            set: { isPresented in
+                if !isPresented { pendingDeleteId = nil }
+            }
+        )
+    }
+
+    private func confirmPendingDelete() {
+        if let id = pendingDeleteId { deleteModel(id) }
+        pendingDeleteId = nil
     }
 
     private func deleteModel(_ modelId: String) {
@@ -351,7 +366,7 @@ private struct ActiveModelCardView: View {
                 Text("\(Int(progress * 100))%")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                Button("Cancel") { dm.cancelAllDownloads() }
+                Button("Cancel") { engine.downloadManager.cancelAllDownloads() }
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(SwiftBuddyTheme.error)
             }
