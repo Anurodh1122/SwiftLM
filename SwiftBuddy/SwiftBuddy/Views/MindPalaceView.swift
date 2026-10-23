@@ -11,6 +11,7 @@ struct MindPalaceView: View {
     @State private var isSimulating = false
     @State private var isPhysicsSettled = false
     @State private var draggedNodeId: String? = nil
+    @State private var simulationSteps = 0
     
     // Timer
     private let timer = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
@@ -26,8 +27,11 @@ struct MindPalaceView: View {
                         .foregroundStyle(.secondary)
                     Text("No Synaptic Triples Formed")
                         .font(.title2).bold()
-                    Text("Converse with a persona to trigger Synaptic Synthesis.")
+                    // Chatting never fills this graph; only synthesis does.
+                    Text("Load a model, then in Chat swipe left on a persona and tap Synthesize Graph.")
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 40)
                 }
             } else {
                 GeometryReader { proxy in
@@ -77,6 +81,7 @@ struct MindPalaceView: View {
                                         if distance(nearest.position, value.location) < 30 {
                                             draggedNodeId = nearest.id
                                             isPhysicsSettled = false
+                                            simulationSteps = 0
                                         }
                                     }
                                 }
@@ -149,6 +154,7 @@ struct MindPalaceView: View {
         self.nodes = newNodes
         self.edges = newEdges
         self.isPhysicsSettled = false
+        self.simulationSteps = 0
     }
     
     private func randomPoint(around center: CGPoint) -> CGPoint {
@@ -161,81 +167,90 @@ struct MindPalaceView: View {
         hypot(p1.x - p2.x, p1.y - p2.y)
     }
     
+    /// One physics step. Runs on a local copy and publishes once: writing each node field
+    /// straight into the `@State` dictionary copied the whole graph on every write, many
+    /// times per frame, which is what made the screen stall.
     private func stepSimulation(center: CGPoint) {
-        var totalDisplacement: CGFloat = 0
+        var sim = nodes
+        let ids = Array(sim.keys)
+        guard !ids.isEmpty else {
+            isPhysicsSettled = true
+            return
+        }
         let k: CGFloat = 0.5 // Spring constant
         let repulsion: CGFloat = 12000 // Increased Node repulsion to spread text
         let damping: CGFloat = 0.85
         let centerGravity: CGFloat = 0.005 // Reduced pull to center to allow spread
-        
+        let maxSpeed: CGFloat = 40 // Keeps near-overlapping nodes from flinging off-screen
+
         // 1. Calculate Repulsion (Coulomb)
-        let nodeValues = Array(nodes.values)
-        for i in 0..<nodeValues.count {
-            for j in (i+1)..<nodeValues.count {
-                let n1 = nodeValues[i]
-                let n2 = nodeValues[j]
-                
+        for i in 0..<ids.count {
+            for j in (i + 1)..<ids.count {
+                guard let n1 = sim[ids[i]], let n2 = sim[ids[j]] else { continue }
                 let dx = n1.position.x - n2.position.x
                 let dy = n1.position.y - n2.position.y
                 let dist = max(hypot(dx, dy), 1) // Prevent div 0
-                
+
                 let force = repulsion / (dist * dist)
                 let fx = (dx / dist) * force
                 let fy = (dy / dist) * force
-                
+
                 if n1.id != draggedNodeId {
-                    nodes[n1.id]?.velocity.x += fx
-                    nodes[n1.id]?.velocity.y += fy
+                    sim[n1.id]?.velocity.x += fx
+                    sim[n1.id]?.velocity.y += fy
                 }
                 if n2.id != draggedNodeId {
-                    nodes[n2.id]?.velocity.x -= fx
-                    nodes[n2.id]?.velocity.y -= fy
+                    sim[n2.id]?.velocity.x -= fx
+                    sim[n2.id]?.velocity.y -= fy
                 }
             }
         }
-        
+
         // 2. Calculate Spring Attraction (Hooke's)
         for edge in edges {
-            guard let n1 = nodes[edge.sourceId], let n2 = nodes[edge.targetId] else { continue }
-            
+            guard let n1 = sim[edge.sourceId], let n2 = sim[edge.targetId] else { continue }
+
             let dx = n2.position.x - n1.position.x
             let dy = n2.position.y - n1.position.y
             let dist = max(hypot(dx, dy), 1)
-            
-            let force = (dist - 280) * k // Increased Target length to 280 to prevent word bunching
+
+            // Target length 280 prevents word bunching. Scaled down: at full strength the
+            // spring moved nodes up to 140 px per frame, overshot every step and kept the
+            // graph oscillating instead of settling.
+            let force = (dist - 280) * k * 0.01
             let fx = (dx / dist) * force
             let fy = (dy / dist) * force
-            
+
             if n1.id != draggedNodeId {
-                nodes[n1.id]?.velocity.x += fx
-                nodes[n1.id]?.velocity.y += fy
+                sim[n1.id]?.velocity.x += fx
+                sim[n1.id]?.velocity.y += fy
             }
             if n2.id != draggedNodeId {
-                nodes[n2.id]?.velocity.x -= fx
-                nodes[n2.id]?.velocity.y -= fy
+                sim[n2.id]?.velocity.x -= fx
+                sim[n2.id]?.velocity.y -= fy
             }
         }
-        
+
         // 3. Center Gravity & Integration
-        for (id, node) in nodes {
-            if id == draggedNodeId { continue }
-            
-            // Gravity
-            nodes[id]?.velocity.x += (center.x - node.position.x) * centerGravity
-            nodes[id]?.velocity.y += (center.y - node.position.y) * centerGravity
-            
-            // Damping & application
-            nodes[id]?.velocity.x *= damping
-            nodes[id]?.velocity.y *= damping
-            
-            nodes[id]?.position.x += (nodes[id]?.velocity.x ?? 0)
-            nodes[id]?.position.y += (nodes[id]?.velocity.y ?? 0)
-            
-            totalDisplacement += abs(nodes[id]?.velocity.x ?? 0) + abs(nodes[id]?.velocity.y ?? 0)
+        var totalDisplacement: CGFloat = 0
+        for id in ids where id != draggedNodeId {
+            guard var node = sim[id] else { continue }
+            node.velocity.x += (center.x - node.position.x) * centerGravity
+            node.velocity.y += (center.y - node.position.y) * centerGravity
+            node.velocity.x = min(max(node.velocity.x * damping, -maxSpeed), maxSpeed)
+            node.velocity.y = min(max(node.velocity.y * damping, -maxSpeed), maxSpeed)
+            node.position.x += node.velocity.x
+            node.position.y += node.velocity.y
+            totalDisplacement += abs(node.velocity.x) + abs(node.velocity.y)
+            sim[id] = node
         }
-        
-        // Settle condition
-        if totalDisplacement < 0.5 {
+        nodes = sim
+        simulationSteps += 1
+
+        // Settled once the average node barely moves, or after ~10 s regardless: the old
+        // fixed total (< 0.5 across all nodes) was never reached by larger graphs, so the
+        // simulation ran forever.
+        if totalDisplacement / CGFloat(ids.count) < 0.05 || simulationSteps > 600 {
             isPhysicsSettled = true
         }
     }

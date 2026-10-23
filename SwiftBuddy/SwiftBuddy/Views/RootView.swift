@@ -159,24 +159,7 @@ struct RootView: View {
                                 
                                 Button {
                                     Task {
-                                        registry.lastSyncLog = "RE-SYNTHESIZING \(wing.name)..."
-                                        registry.isSyncing = true
-                                        try? await GraphPalaceService.shared.buildRelationalGraph(wingName: wing.name, using: engine) { current, total, text in
-                                            Task { @MainActor in
-                                                registry.extractionProcessed = current
-                                                registry.extractionTotal = total
-                                                registry.currentChunkText = text
-                                            }
-                                        }
-                                        try? await GraphPalaceService.shared.synthesizePersonaIndex(wingName: wing.name, using: engine) { current, total, text in
-                                            Task { @MainActor in
-                                                registry.extractionProcessed = current
-                                                registry.extractionTotal = total
-                                                registry.currentChunkText = text
-                                            }
-                                        }
-                                        registry.lastSyncLog = "Finished processing \(wing.name)!"
-                                        registry.isSyncing = false
+                                        await synthesizeGraph(for: wing.name)
                                     }
                                 } label: {
                                     Label("Synthesize Graph", systemImage: "network")
@@ -349,24 +332,7 @@ struct RootView: View {
                             .contextMenu {
                                 Button {
                                     Task {
-                                        registry.lastSyncLog = "RE-SYNTHESIZING \(wing.name)..."
-                                        registry.isSyncing = true
-                                        try? await GraphPalaceService.shared.buildRelationalGraph(wingName: wing.name, using: engine) { current, total, text in
-                                            Task { @MainActor in
-                                                registry.extractionProcessed = current
-                                                registry.extractionTotal = total
-                                                registry.currentChunkText = text
-                                            }
-                                        }
-                                        try? await GraphPalaceService.shared.synthesizePersonaIndex(wingName: wing.name, using: engine) { current, total, text in
-                                            Task { @MainActor in
-                                                registry.extractionProcessed = current
-                                                registry.extractionTotal = total
-                                                registry.currentChunkText = text
-                                            }
-                                        }
-                                        registry.lastSyncLog = "Finished processing \(wing.name)!"
-                                        registry.isSyncing = false
+                                        await synthesizeGraph(for: wing.name)
                                     }
                                 } label: {
                                     Label("Re-Synthesize Graph", systemImage: "network")
@@ -532,6 +498,34 @@ struct RootView: View {
         }
     }
     #endif
+
+    /// Builds the persona's knowledge graph and index. Failures used to be swallowed by
+    /// `try?` and reported as "Finished", so a run that saved nothing looked successful.
+    private func synthesizeGraph(for wingName: String) async {
+        registry.lastSyncLog = "Synthesizing \(wingName)…"
+        registry.extractionProcessed = 0
+        registry.extractionTotal = 0
+        registry.isSyncing = true
+        let report: (Int, Int, String) -> Void = { current, total, text in
+            Task { @MainActor in
+                registry.extractionProcessed = current
+                registry.extractionTotal = total
+                registry.currentChunkText = text
+            }
+        }
+        do {
+            try await GraphPalaceService.shared.buildRelationalGraph(
+                wingName: wingName, using: engine, onProgress: report)
+            try await GraphPalaceService.shared.synthesizePersonaIndex(
+                wingName: wingName, using: engine, onProgress: report)
+            registry.lastSyncLog = "Finished \(wingName). Open Mind Palace to see the graph."
+        } catch {
+            registry.lastSyncLog = "Couldn't synthesize \(wingName): \(error.localizedDescription)"
+        }
+        // Leave the outcome on screen briefly; the strip disappears with isSyncing.
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        registry.isSyncing = false
+    }
 }
 
 struct PersonaExtractionOverlay: View {

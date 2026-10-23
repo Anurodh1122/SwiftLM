@@ -5,6 +5,18 @@ import SwiftData
 import MLXInferenceCore
 #endif
 
+public enum GraphSynthesisError: LocalizedError {
+    case noModelLoaded
+    case nothingToSynthesize(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .noModelLoaded: return "Load a model first."
+        case .nothingToSynthesize(let wing): return "\(wing) has no memories to build a graph from."
+        }
+    }
+}
+
 @MainActor
 public final class GraphPalaceService {
     public static let shared = GraphPalaceService()
@@ -59,9 +71,18 @@ public final class GraphPalaceService {
             print("[GraphPalace] Engine unavailable or not injected. Skipping LLM generation loop.")
             return
         }
-        
+        // With no model loaded every generation ends at once with no text, so the run
+        // "finished" having saved nothing. Say so instead.
+        guard engine.loadedModelId != nil else {
+            throw GraphSynthesisError.noModelLoaded
+        }
+        guard !extractionTargets.isEmpty else {
+            throw GraphSynthesisError.nothingToSynthesize(wingName)
+        }
+
         for (index, target) in extractionTargets.enumerated() {
-            onProgress?(index + 1, extractionTargets.count, "SYNTHESIZING EDGE: \(target)")
+            // The whole ~16,000-character chunk used to go into the progress line.
+            onProgress?(index + 1, extractionTargets.count, "SYNTHESIZING EDGE: \(target.prefix(160))…")
             let prompt = buildGraphPrompt(text: target)
             let stream = engine.generate(messages: [.user(prompt)])
             var response = ""
@@ -121,32 +142,49 @@ public final class GraphPalaceService {
         print("[GraphPalace] 🧠 Persona Index Generated & Saved.")
     }
     
+    /// Reads triples out of a model reply.
+    ///
+    /// Tolerant on purpose: the old parser accepted only a reply that was exactly one JSON
+    /// array of string-only objects, so a thinking block, a sentence of preamble, one
+    /// non-string value or a reply cut off at the token limit discarded the whole chunk,
+    /// and the Mind Palace stayed empty. Each `{...}` object is now parsed on its own.
     public func parseGraphTriples(fromJSONString jsonString: String) -> [KnowledgeGraphTriple]? {
-        var cleanText = jsonString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if cleanText.hasPrefix("```json") { cleanText.removeFirst(7) }
-        else if cleanText.hasPrefix("```") { cleanText.removeFirst(3) }
-        if cleanText.hasSuffix("```") { cleanText.removeLast(3) }
-        cleanText = cleanText.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        guard let data = cleanText.data(using: .utf8) else { return nil }
-        guard let array = try? JSONSerialization.jsonObject(with: data, options: []) as? [[String: String]] else { return nil }
-        
-        var triples: [KnowledgeGraphTriple] = []
-        for dict in array {
-            guard let subject = dict["subject"],
-                  let predicate = dict["predicate"],
-                  let object = dict["object"] else {
-                continue
+        var text = jsonString
+        if let thinkEnd = text.range(of: "</think>") {
+            text = String(text[thinkEnd.upperBound...])
+        }
+
+        func string(_ value: Any?) -> String? {
+            switch value {
+            case let s as String:
+                let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            case let n as NSNumber: return n.stringValue
+            default: return nil
             }
+        }
+
+        var triples: [KnowledgeGraphTriple] = []
+        var searchStart = text.startIndex
+        while let open = text[searchStart...].firstIndex(of: "{"),
+            let close = text[open...].firstIndex(of: "}")
+        {
+            searchStart = text.index(after: close)
+            guard let data = String(text[open...close]).data(using: .utf8),
+                let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                let subject = string(dict["subject"]),
+                let predicate = string(dict["predicate"]),
+                let object = string(dict["object"])
+            else { continue }
             triples.append(KnowledgeGraphTriple(
-                subject: subject, 
-                predicate: predicate, 
+                subject: subject,
+                predicate: predicate,
                 object: object,
-                taxonomy: dict["taxonomy"],
-                confidence: dict["confidence"]
+                taxonomy: string(dict["taxonomy"]),
+                confidence: string(dict["confidence"])
             ))
         }
-        
+
         return triples.isEmpty ? nil : triples
     }
     
