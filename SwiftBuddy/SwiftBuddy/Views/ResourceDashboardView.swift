@@ -57,7 +57,7 @@ public struct ResourceDashboardView: View {
                     .fill(.ultraThinMaterial)
                 
                 RoundedRectangle(cornerRadius: 16)
-                    .fill(Color(nsColor: .windowBackgroundColor).opacity(0.3))
+                    .fill(SwiftBuddyTheme.background.opacity(0.3))
                 
                 // Ambient Glow logic
                 LinearGradient(colors: [.green.opacity(0.1), .purple.opacity(0.05), .blue.opacity(0.05)], startPoint: .topLeading, endPoint: .bottomTrailing)

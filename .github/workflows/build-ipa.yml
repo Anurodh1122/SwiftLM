@@ -1,0 +1,124 @@
+name: Build iOS IPA (Unsigned)
+
+# Manual-only. Produces an UNSIGNED SwiftBuddy.ipa for sideloading (Sideloadly,
+# AltStore, etc.), which re-sign it with your own Apple ID. Mirrors build-dmg.yml,
+# but targets iOS and packages Payload/SwiftBuddy.app into an .ipa.
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0  # Full history — needed for `git rev-list --count HEAD` (build number)
+
+      # mlx-swift-lm needs Swift tools 6.2; the macos-15 default Xcode ships 6.1.
+      - name: Select Xcode 26 (Swift 6.2)
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+
+      - name: Install Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain || true
+
+      - name: Generate Xcode Project
+        run: |
+          # Same versioning scheme as build-dmg.yml / release.yml.
+          export SWIFTBUDDY_MARKETING_VERSION="$(date -u +%Y.%m.%d)"
+          export SWIFTBUDDY_BUILD_NUMBER="$(git rev-list --count HEAD)"
+          cd SwiftBuddy && python3 generate_xcodeproj.py
+
+      # mlx-swift-lm's EmbeddingGemma2.swift has two closures mixing Int/Double math that
+      # swiftc fails to type-check in reasonable time ("unable to type-check this
+      # expression") in the iOS Release build. Give them explicit types; semantics are
+      # unchanged. Fails loudly if the source no longer matches and isn't already patched,
+      # so a silent upstream change can't turn into a confusing compiler error later.
+      - name: Patch slow-to-typecheck expressions in mlx-swift-lm
+        run: |
+          python3 - <<'PY'
+          import sys
+          path = "mlx-swift-lm/Libraries/MLXVLM/EmbeddingGemma2.swift"
+          src = open(path, encoding="utf-8").read()
+
+          patches = [
+              (
+                  "            indices = (0 ..< count).map { min(frameCount - 1, Int(Double($0) * step)) }\n",
+                  "            indices = (0 ..< count).map { (index: Int) -> Int in\n"
+                  "                let scaled: Double = Double(index) * step\n"
+                  "                return min(frameCount - 1, Int(scaled))\n"
+                  "            }\n",
+              ),
+              (
+                  "        return (0 ..< maximumFrames).map { position in\n"
+                  "            position > 0 && position == maximumFrames - 1\n"
+                  "                ? indices[indices.count - 1] : indices[Int(Double(position) * step)]\n"
+                  "        }\n",
+                  "        return (0 ..< maximumFrames).map { (position: Int) -> Int in\n"
+                  "            if position > 0 && position == maximumFrames - 1 {\n"
+                  "                return indices[indices.count - 1]\n"
+                  "            }\n"
+                  "            let scaled: Double = Double(position) * step\n"
+                  "            return indices[Int(scaled)]\n"
+                  "        }\n",
+              ),
+          ]
+
+          for old, new in patches:
+              if old in src:
+                  src = src.replace(old, new, 1)
+              elif new in src:
+                  print("already patched, skipping")
+              else:
+                  sys.exit("Expected code not found in " + path + "; update the patch step.")
+
+          open(path, "w", encoding="utf-8").write(src)
+          print("patched", path)
+          PY
+
+      - name: Build for iOS (unsigned)
+        run: |
+          # Plain `build` (not `archive`) with signing disabled yields an unsigned
+          # SwiftBuddy.app; Sideloadly signs it with your Apple ID at install time.
+          xcodebuild build \
+            -project SwiftBuddy/SwiftBuddy.xcodeproj \
+            -scheme SwiftBuddy \
+            -destination "generic/platform=iOS" \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package IPA
+        run: |
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/SwiftBuddy.app"
+          if [ ! -d "$APP" ]; then
+            echo "SwiftBuddy.app not found at expected path. Products present:"
+            find "$RUNNER_TEMP/DerivedData/Build/Products" -maxdepth 2
+            exit 1
+          fi
+
+          # Informational only: print what was built so a bad IPA is easy to diagnose.
+          # (Not fatal — a wrong guess about tool output must not discard a finished build.)
+          /usr/libexec/PlistBuddy -c "Print :DTPlatformName" "$APP/Info.plist" || true
+          EXEC="$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist" || echo SwiftBuddy)"
+          lipo -info "$EXEC" || true
+          vtool -show-build "$EXEC" || true
+
+          mkdir -p output/Payload
+          cp -R "$APP" output/Payload/
+          (cd output && zip -qry SwiftBuddy-unsigned.ipa Payload)
+          rm -rf output/Payload
+          ls -lh output/
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftBuddy-iOS-Unsigned
+          path: output/SwiftBuddy-unsigned.ipa
+          retention-days: 14
