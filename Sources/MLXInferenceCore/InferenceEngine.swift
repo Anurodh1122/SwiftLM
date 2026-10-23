@@ -389,6 +389,11 @@ public final class InferenceEngine: ObservableObject {
         currentModelId = modelId
         let explicitLocalDirectory = localDirectory
 
+        // If the process is killed mid-load (usually out of memory) this stays set, and
+        // the next launch sees it and skips the automatic reload instead of crash-looping.
+        UserDefaults.standard.set(modelId, forKey: Self.interruptedLoadKey)
+        defer { UserDefaults.standard.removeObject(forKey: Self.interruptedLoadKey) }
+
         do {
             let hub = HubApi(downloadBase: ModelStorage.cacheRoot)
 
@@ -421,6 +426,9 @@ public final class InferenceEngine: ObservableObject {
                 let localConfig = ModelStorage.readModelConfig(inDirectory: explicitLocalDirectory)
             {
                 isMoE = ModelStorage.configIndicatesMoE(localConfig)
+            } else if let storedConfig = ModelStorage.readModelConfig(for: modelId) {
+                // Downloaded through HuggingFace search, so not in the catalog either.
+                isMoE = ModelStorage.configIndicatesMoE(storedConfig)
             } else {
                 isMoE = false
             }
@@ -432,7 +440,11 @@ public final class InferenceEngine: ObservableObject {
             }
             // SSD expert streaming defaults ON for MoE until the user saves a preference.
             // Once persisted, the saved toggle becomes authoritative for all models.
-            let shouldStream = generationConfig.effectiveStreamExperts(defaultingTo: isMoE)
+            // Streaming pages MoE expert weights in from storage; a dense model has none to
+            // stream. Turning it on for one only switches the library into its streaming mode
+            // (lazy weights, per-layer evals skipped) with nothing to stream, and such models
+            // then fail to load — so streaming applies to MoE models only.
+            let shouldStream = isMoE && generationConfig.effectiveStreamExperts(defaultingTo: isMoE)
             if shouldStream {
                 config.lazyLoad = true
                 let modelDir = explicitLocalDirectory ?? ModelStorage.snapshotDirectory(for: modelId)
@@ -551,6 +563,28 @@ public final class InferenceEngine: ObservableObject {
             self.maxContextWindow = 0
             self.activeContextTokens = 0
         }
+    }
+
+    private static let interruptedLoadKey = "swiftlm.interruptedLoadModelId"
+
+    /// Call once at launch before reloading the last model. Returns true when the previous
+    /// run died while loading a model: the model is then not reloaded automatically (that
+    /// would crash again and trap the user in a loop) and an explanation is shown instead.
+    @discardableResult
+    public func skipAutoLoadAfterInterruptedLaunch() -> Bool {
+        let defaults = UserDefaults.standard
+        guard let modelId = defaults.string(forKey: Self.interruptedLoadKey) else { return false }
+        defaults.removeObject(forKey: Self.interruptedLoadKey)
+        downloadManager.lastLoadedModelId = nil
+        let name = ModelStorage.isLocalDirectoryPath(modelId)
+            ? URL(filePath: modelId).lastPathComponent
+            : (modelId.components(separatedBy: "/").last ?? modelId)
+        state = .error(
+            "The app stopped while loading \(name), most likely because it ran out of memory, "
+            + "so it was not reloaded automatically. Try a smaller model, or turn on SSD Streaming "
+            + "for MoE models."
+        )
+        return true
     }
 
     /// Unload the current model and free all GPU memory.

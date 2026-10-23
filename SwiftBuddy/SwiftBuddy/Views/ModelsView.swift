@@ -325,7 +325,9 @@ private struct ActiveModelCardView: View {
                 loadingCard(progress: progress, stage: stage)
             case .downloading(let progress, let speed):
                 downloadingCard(progress: progress, speed: speed)
-            case .idle, .error:
+            case .error(let message):
+                errorCard(message: message)
+            case .idle:
                 idleCard
             }
         }
@@ -374,6 +376,29 @@ private struct ActiveModelCardView: View {
             Text(speed)
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(SwiftBuddyTheme.textSecondary)
+        }
+        .padding()
+        .glassCard(cornerRadius: SwiftBuddyTheme.radiusLarge)
+    }
+
+    /// A failed load used to show the same "No model loaded" card as idle, so the reason
+    /// was only visible on the Chat tab. Show it here too.
+    private func errorCard(message: String) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.title3)
+                .foregroundStyle(SwiftBuddyTheme.warning)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Couldn't load the model")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            Spacer()
         }
         .padding()
         .glassCard(cornerRadius: SwiftBuddyTheme.radiusLarge)

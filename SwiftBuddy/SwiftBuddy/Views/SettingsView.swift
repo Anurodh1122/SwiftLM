@@ -90,6 +90,7 @@ struct SettingsView: View {
             get: { effectiveStreamExpertsSetting },
             set: { newValue in
                 viewModel.config.streamExperts = newValue
+                GenerationConfig.markStreamExpertsChosen()
                 // Auto-reload: save config and immediately restart the model so
                 // the load-time SSD streaming flag takes effect without a manual tap.
                 viewModel.config.save()
@@ -357,7 +358,7 @@ struct SettingsView: View {
                         label: "SSD Streaming", icon: "internaldrive",
                         isOn: ssdStreamingBinding,
                         tint: SwiftBuddyTheme.warning,
-                        hint: "Stream MoE expert weights from NVMe (auto-reloads model)"
+                        hint: "MoE models only: stream expert weights from storage (auto-reloads model). Ignored for dense models."
                     )
                     toggleRow(
                         label: "MTP Speculative Decoding", icon: "bolt.horizontal.fill",

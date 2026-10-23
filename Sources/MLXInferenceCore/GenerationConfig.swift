@@ -110,11 +110,20 @@ public struct GenerationConfig: Sendable, Codable {
         UserDefaults.standard.object(forKey: storageKey) != nil
     }
 
+    private static let streamExpertsChosenKey = "swiftlm.streamExpertsChosen"
+
+    /// Record that the user flipped the SSD streaming toggle themselves.
+    public static func markStreamExpertsChosen() {
+        UserDefaults.standard.set(true, forKey: streamExpertsChosenKey)
+    }
+
     /// Computes the effective SSD streaming setting.
-    /// Before the user has saved settings, MoE models default to streaming on.
-    /// After settings are persisted, the saved toggle becomes authoritative.
+    /// MoE models default to streaming on until the user flips the toggle; after that the
+    /// saved toggle is authoritative. This must not key off `hasPersistedConfig`: any other
+    /// setting change (a slider, the theme) saves the whole config, which would silently
+    /// turn the default off and make MoE models try to fit entirely in RAM.
     public func effectiveStreamExperts(defaultingTo defaultValue: Bool) -> Bool {
-        Self.hasPersistedConfig ? streamExperts : defaultValue
+        UserDefaults.standard.bool(forKey: Self.streamExpertsChosenKey) ? streamExperts : defaultValue
     }
 
     public func save() {
