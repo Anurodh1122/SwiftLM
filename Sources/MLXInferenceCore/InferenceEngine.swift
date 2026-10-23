@@ -461,6 +461,14 @@ public final class InferenceEngine: ObservableObject {
     ///   downloaded, resolved through the existing `ModelStorage` id-based
     ///   helpers, which still work for that case unchanged.
     private func loadVerifiedModel(modelId: String, localDirectory: URL? = nil) async {
+        // Free the model being replaced before reading the new one. The old container
+        // used to stay resident until the new load finished, so the two added up: going
+        // from a 4B (2.4 GB) to Qwen3.6-35B-A3B reached 5.1 GB mid-load on an 8 GB iPad
+        // and iOS killed the app.
+        if container != nil {
+            releaseLoadedModelResources()
+            MLX.Memory.clearCache()
+        }
         loadToken &+= 1
         let token = loadToken
         setLoadingState(progress: 0.05, stage: "Preparing model configuration")
@@ -699,6 +707,19 @@ public final class InferenceEngine: ObservableObject {
         releaseLoadedModelResources()
         corruptedModelId = nil
         state = .idle
+    }
+
+    /// A parsed tool call as the `<tool_call>` text block the model wrote, in the
+    /// `{"name": …, "parameters": …}` shape the tool instructions ask for.
+    fileprivate static func toolCallText(_ call: MLXLMCommon.ToolCall) -> String {
+        struct Payload: Encodable {
+            let name: String
+            let parameters: [String: MLXLMCommon.JSONValue]
+        }
+        let payload = Payload(name: call.function.name, parameters: call.function.arguments)
+        let json = (try? JSONEncoder().encode(payload)).flatMap { String(data: $0, encoding: .utf8) }
+            ?? #"{"name": "\#(call.function.name)"}"#
+        return "<tool_call>\n\(json)\n</tool_call>"
     }
 
     /// `num_experts_per_tok` from a model config, top level or inside `text_config`.
@@ -998,6 +1019,27 @@ extension InferenceEngine {
                             }
 
                             continuation.yield(GenerationToken(text: text, isThinking: thinkingActive))
+                        } else if case .toolCall(let call) = generation {
+                            // mlx-swift-lm recognises the model's tool call and emits it as
+                            // an event instead of text. The app runs tools from
+                            // `<tool_call>` text (ChatViewModel, prompt-based API clients),
+                            // and this loop used to read only `.chunk`: the call was dropped
+                            // and the reply came out empty. Hand it back as that text.
+                            let text = Self.toolCallText(call)
+                            print("[InferenceEngine] tool call: \(call.function.name)")
+                            if firstTokenDate == nil { firstTokenDate = Date() }
+                            outputText += text
+                            tokenCount += 1
+                            continuation.yield(GenerationToken(text: text))
+                        } else if case .rejectedToolCall(let rejected) = generation {
+                            // Tool-call-shaped output the library could not parse: pass on
+                            // what the model wrote rather than dropping it.
+                            print("[InferenceEngine] rejected tool call (\(rejected.reason.rawValue)): \(rejected.detail ?? "")")
+                            if !rejected.rawTextPreview.isEmpty {
+                                outputText += rejected.rawTextPreview
+                                tokenCount += 1
+                                continuation.yield(GenerationToken(text: rejected.rawTextPreview))
+                            }
                         } else if case .info(let info) = generation {
                             // `proposedDraftTokens`/`acceptedDraftTokens` are `Int?` as of
                             // mlx-swift-lm 348ff97 (nil for non-MTP iterators, renamed from
