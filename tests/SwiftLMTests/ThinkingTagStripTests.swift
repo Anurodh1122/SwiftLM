@@ -74,6 +74,12 @@ final class ThinkingTagStripTests: XCTestCase {
         XCTAssertEqual(result, "Answer starts here")
     }
 
+    func testStrip_OrphanClosingTag_StripsPrefilledThought() {
+        // The chat template pre-filled `<think>`, so only the closing tag is in the output.
+        let input = "reasoning inside a pre-filled block\n</think>\nThe answer."
+        XCTAssertEqual(stripThinkingTags(from: input), "The answer.")
+    }
+
     func testStrip_ContentBeforeAndAfterThink() {
         // Reproduces the exact shape of Qwen3 output from screenshot 2 (Issue #97):
         // Russian tongue-twister reply with an inline <think> block.

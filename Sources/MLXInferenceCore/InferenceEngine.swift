@@ -161,10 +161,19 @@ public final class InferenceEngine: ObservableObject {
     private var currentModelId: String?
     /// The ID of the last model that was successfully loaded. Remains set during .generating.
     public var loadedModelId: String? { currentModelId }
-    private var generationTask: Task<Void, Never>?
     /// True while a `generate` call is running. Generations take turns on the one loaded
     /// model; the chat, the local API server and tool-call follow-ups all share it.
     private var isGenerationActive = false
+    /// Set by `stopGeneration()`/unloading to end the generation that holds the turn.
+    /// A flag rather than a task handle, so a request still waiting for its turn can't
+    /// take the place of the one actually running.
+    private var stopRequested = false
+    /// Bumped by every load and unload. A load whose token is no longer current was
+    /// superseded (unloaded mid-load, e.g. on a memory warning) and must not publish.
+    private var loadToken: UInt64 = 0
+    /// True from the start of `load(modelId:)` until it returns. Two loads at once would
+    /// share the global SSD-streaming configuration and double peak memory.
+    private var isLoadInFlight = false
 
     // All NotificationCenter observers collected for clean deregistration
     // nonisolated(unsafe): populated exclusively from MainActor init, read only in deinit
@@ -202,7 +211,13 @@ public final class InferenceEngine: ObservableObject {
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if case .generating = self.state { return }  // don't interrupt mid-stream
+                    switch self.state {
+                    // Don't interrupt mid-stream. Loading a large model raises warnings
+                    // routinely; unloading then tore down SSD streaming mid-load and left
+                    // a half-loaded model behind.
+                    case .generating, .loading, .downloading: return
+                    default: break
+                    }
                     self.unload()
                     self.state = .error("Unloaded due to memory pressure. Tap to reload.")
                 }
@@ -259,8 +274,9 @@ public final class InferenceEngine: ObservableObject {
                         return
                     }
 
+                    // Only what was loaded when the app left; nothing loaded means nothing
+                    // to restore.
                     let modelToReload = self.backgroundedModelId
-                        ?? self.downloadManager.lastLoadedModelId
                     self.backgroundedModelId = nil
                     if let modelId = modelToReload {
                         await self.load(modelId: modelId)
@@ -305,10 +321,18 @@ public final class InferenceEngine: ObservableObject {
     /// only active expert weights are resident in RAM during inference.
     public func load(modelId: String) async {
         guard state != .ready(modelId: modelId) else { return }
-        guard !thermalLevel.isThrottled else {
+        // Only critical blocks a load: iPads reach "serious" just from charging while
+        // downloading, which made models refuse to load for no visible reason.
+        guard thermalLevel != .critical else {
             state = .error("Device is too hot. Let it cool before loading a model.")
             return
         }
+        guard !isLoadInFlight else {
+            print("[InferenceEngine] Ignoring load of \(modelId): another load is in progress.")
+            return
+        }
+        isLoadInFlight = true
+        defer { isLoadInFlight = false }
         corruptedModelId = nil
 
         // A path the user pointed the app at directly (e.g. via "Add Local
@@ -388,6 +412,8 @@ public final class InferenceEngine: ObservableObject {
     ///   downloaded, resolved through the existing `ModelStorage` id-based
     ///   helpers, which still work for that case unchanged.
     private func loadVerifiedModel(modelId: String, localDirectory: URL? = nil) async {
+        loadToken &+= 1
+        let token = loadToken
         setLoadingState(progress: 0.05, stage: "Preparing model configuration")
         currentModelId = modelId
         let explicitLocalDirectory = localDirectory
@@ -472,6 +498,7 @@ public final class InferenceEngine: ObservableObject {
                 configuration: config,
                 downloader: downloader
             )
+            guard token == loadToken else { return }
 
             let loadingStage = architecture.supportsVision
                 ? "Loading multimodal model"
@@ -479,31 +506,36 @@ public final class InferenceEngine: ObservableObject {
 
             setLoadingState(progress: 0.22, stage: loadingStage)
 
+            let loadedContainer: ModelContainer
             if architecture.supportsVision {
-                container = try await VLMModelFactory.shared.loadContainer(
+                loadedContainer = try await VLMModelFactory.shared.loadContainer(
                     from: downloader,
                     using: TransformersTokenizerLoader(),
                     configuration: config
                 ) { [weak self] progress in
                     Task { @MainActor in
-                        guard let self else { return }
+                        guard let self, token == self.loadToken else { return }
                         let pct = progress.fractionCompleted
                         self.setLoadingState(progress: 0.22 + (pct * 0.68), stage: loadingStage)
                     }
                 }
             } else {
-                container = try await LLMModelFactory.shared.loadContainer(
+                loadedContainer = try await LLMModelFactory.shared.loadContainer(
                     from: downloader,
                     using: TransformersTokenizerLoader(),
                     configuration: config
                 ) { [weak self] progress in
                     Task { @MainActor in
-                        guard let self else { return }
+                        guard let self, token == self.loadToken else { return }
                         let pct = progress.fractionCompleted
                         self.setLoadingState(progress: 0.22 + (pct * 0.68), stage: loadingStage)
                     }
                 }
             }
+            // Unloaded while loading: drop the result instead of publishing a model the
+            // rest of the engine already considers gone.
+            guard token == loadToken else { return }
+            container = loadedContainer
 
             downloadManager.clearProgress(modelId: modelId)
             downloadManager.lastLoadedModelId = modelId
@@ -537,9 +569,16 @@ public final class InferenceEngine: ObservableObject {
                 print("[InferenceEngine] No explicit context limit found in config.json, defaulting to 8192")
             }
 
+            #if os(iOS)
+            // Cap MLX's reusable-buffer cache. Uncapped, it grows with every generation
+            // until iOS kills the app for its memory footprint.
+            MLX.Memory.cacheLimit = 256 * 1024 * 1024
+            #endif
             state = .ready(modelId: modelId)
 
         } catch {
+            // A superseded load's failure is not the current state's business.
+            guard token == loadToken else { return }
             ExpertStreamingConfig.shared.deactivate()
             downloadManager.clearProgress(modelId: modelId)
             // A local directory's modelId is a full absolute path — show just the
@@ -598,8 +637,8 @@ public final class InferenceEngine: ObservableObject {
     }
 
     private func releaseLoadedModelResources() {
-        generationTask?.cancel()
-        generationTask = nil
+        if isGenerationActive { stopRequested = true }
+        loadToken &+= 1
         container = nil
         currentModelId = nil
         maxContextWindow = 0
@@ -666,6 +705,14 @@ public final class InferenceEngine: ObservableObject {
 func stripThinkingTags(from text: String) -> String {
     var result = text
     var stripped = false
+    // Templates that pre-fill `<think>` in the prompt make the model's output start
+    // inside the thought, so the reply holds a closing tag with no opening one.
+    if let closeRange = result.range(of: "</think>"),
+        result.range(of: "<think>", range: result.startIndex..<closeRange.lowerBound) == nil
+    {
+        stripped = true
+        result.removeSubrange(result.startIndex..<closeRange.upperBound)
+    }
     while let openRange = result.range(of: "<think>") {
         stripped = true
         if let closeRange = result.range(of: "</think>", range: openRange.lowerBound..<result.endIndex) {
@@ -704,6 +751,7 @@ extension InferenceEngine {
                 }
                 if Task.isCancelled { continuation.finish(); return }
                 self.isGenerationActive = true
+                self.stopRequested = false
                 defer { self.isGenerationActive = false }
 
                 guard let container = self.container else {
@@ -835,7 +883,7 @@ extension InferenceEngine {
                     var mtpAcceptanceRate: Double? = nil
 
                     for await generation in stream {
-                        guard !Task.isCancelled else { break }
+                        guard !Task.isCancelled, !self.stopRequested else { break }
 
                         if case .chunk(let text, tokenId: _) = generation {
                             // Record time-to-first-token on the very first chunk
@@ -931,15 +979,14 @@ extension InferenceEngine {
             // When the consumer goes away (Stop pressed, chat switched, API client dropped)
             // stop producing; before this the model kept generating to the token limit.
             continuation.onTermination = { _ in task.cancel() }
-            // So `stopGeneration()` and unloading can cancel the run in progress as well.
-            Task { @MainActor in self.generationTask = task }
         }
     }
 
     public func stopGeneration() {
-        generationTask?.cancel()
-        generationTask = nil
-        if let id = currentModelId { state = .ready(modelId: id) }
+        if isGenerationActive { stopRequested = true }
+        // Only a generation hands the state back to ready; called mid-load (critical heat,
+        // backgrounding) this used to report a model as ready before it had loaded.
+        if case .generating = state, let id = currentModelId { state = .ready(modelId: id) }
     }
 
     /// Delete corrupted model files and start a fresh download.

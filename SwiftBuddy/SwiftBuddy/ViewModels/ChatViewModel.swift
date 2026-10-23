@@ -134,6 +134,14 @@ final class ChatViewModel: ObservableObject {
                                 // Only update streaming text with what came before
                                 streamingText = String(response[..<startRange.lowerBound])
                             }
+                        } else if let endRange = response.range(of: "</think>") {
+                            // The template pre-filled `<think>`, so the reply began inside the
+                            // thought and only the closing tag arrives: move what came before
+                            // it out of the answer.
+                            hasRawThinkTags = true
+                            thinkingText = String(response[..<endRange.lowerBound])
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            streamingText = String(response[endRange.upperBound...])
                         } else if !hasRawThinkTags {
                             // Standard flow: no raw tags seen yet, just stream normally
                             streamingText = response 
@@ -193,6 +201,8 @@ final class ChatViewModel: ObservableObject {
                         finalVisible = before + after
                     } else if let startRange = response.range(of: "<think>") {
                          finalVisible = String(response[..<startRange.lowerBound])
+                    } else if let endRange = response.range(of: "</think>") {
+                        finalVisible = String(response[endRange.upperBound...])
                     }
                     
                     // Trim leading newlines that often follow thought blocks

@@ -363,8 +363,9 @@ public final class ModelDownloadManager: ObservableObject {
                 #endif
 
                 Task { @MainActor [weak self] in
+                    // Not `lastLoadedModelId`: a model that was only downloaded must not be
+                    // auto-loaded on the next launch (a too-large one then fails at startup).
                     self?.activeDownloads.removeValue(forKey: modelId)
-                    self?.lastLoadedModelId = modelId
                     self?.refresh()
                 }
             } catch {

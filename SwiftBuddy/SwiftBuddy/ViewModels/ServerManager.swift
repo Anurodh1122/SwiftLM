@@ -231,7 +231,7 @@ final class ServerManager: ObservableObject {
                         sseHeaders.append(HTTPField(name: HTTPField.Name("X-Accel-Buffering")!, value: "no"))
 
                         let sseStream = AsyncStream<ByteBuffer> { cont in
-                            Task {
+                            let producer = Task {
                                 for await token in await engine.generate(messages: chatMessages, config: reqConfig) {
                                     let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\(jsonEscape(token.text))\"},\"finish_reason\":null}]}"
                                     cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
@@ -239,6 +239,9 @@ final class ServerManager: ObservableObject {
                                 cont.yield(ByteBuffer(string: "data: [DONE]\n\n"))
                                 cont.finish()
                             }
+                            // Client disconnected: stop generating instead of running to
+                            // max_tokens while the chat waits for its turn.
+                            cont.onTermination = { _ in producer.cancel() }
                         }
                         return Response(status: .ok, headers: sseHeaders,
                                         body: .init(asyncSequence: sseStream))

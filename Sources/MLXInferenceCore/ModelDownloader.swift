@@ -186,6 +186,17 @@ public final class DownloadSpeedTracker: @unchecked Sendable {
     }
 }
 
+private struct InsufficientStorageError: LocalizedError {
+    let neededBytes: Int64
+    let availableBytes: Int64
+
+    var errorDescription: String? {
+        let gb = { (bytes: Int64) in String(format: "%.1f GB", Double(bytes) / 1_073_741_824) }
+        return "Not enough free space: this model needs \(gb(neededBytes)) more, "
+            + "but only \(gb(availableBytes)) is free."
+    }
+}
+
 private struct DownloadedFileSizeMismatchError: LocalizedError {
     let fileName: String
     let expectedSize: Int64
@@ -398,7 +409,9 @@ public actor ModelDownloader {
                 break
             }
 
-            fileHandle.write(Data(chunkBuffer[0..<chunkCount]))
+            // The throwing variant: the legacy `write(_:)` raises an Objective-C
+            // exception when the disk fills up, which crashes the app.
+            try fileHandle.write(contentsOf: Data(chunkBuffer[0..<chunkCount]))
             bytesWritten += Int64(chunkCount)
 
             speedTracker.record(totalBytes: bytesWritten)
@@ -463,6 +476,20 @@ public actor ModelDownloader {
             ? files.reduce(0) { $0 + ($1.size ?? 0) }
             : 0
         var completedBytes: Int64 = 0
+
+        // Refuse up front rather than fail (or fill the device) partway through a
+        // multi-GB download. Files already on disk from an earlier attempt count as done.
+        if totalExpectedBytes > 0,
+            let available = try? ModelStorage.cacheRoot
+                .resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+                .volumeAvailableCapacityForImportantUsage
+        {
+            let remaining = max(0, totalExpectedBytes - ModelStorage.directorySize(at: snapshotDir))
+            let headroom: Int64 = 512 * 1_048_576
+            if remaining + headroom > available {
+                throw InsufficientStorageError(neededBytes: remaining, availableBytes: available)
+            }
+        }
 
         for (idx, file) in files.enumerated() {
             try Task.checkCancellation()
