@@ -193,12 +193,22 @@ struct ModelManagementView: View {
                         .multilineTextAlignment(.trailing)
                 }
             } footer: {
-                Text("Models are stored in the HuggingFace hub cache. Deleting here removes them from all apps that use this cache.")
+                Text(cacheFooterText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .listStyle(.inset)
+    }
+
+    /// The macOS cache is the shared HuggingFace hub cache; on iOS it's this app's own
+    /// Documents/Models folder, so the "shared with other apps" warning doesn't apply.
+    private var cacheFooterText: String {
+        #if os(macOS)
+        return "Models are stored in the HuggingFace hub cache. Deleting here removes them from all apps that use this cache."
+        #else
+        return "Models are stored in this app's Documents/Models folder. Deleting here removes them from this app only."
+        #endif
     }
 
     // MARK: — Storage Card

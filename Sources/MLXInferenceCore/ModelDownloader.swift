@@ -26,8 +26,22 @@ public struct DownloadFileProgress: Sendable {
     public let totalBytesDownloaded: Int64
     public let speedBytesPerSec: Double?
     public let retryAttempt: Int
+    /// Size of the current file, when the Hub reported it.
+    public let fileSizeBytes: Int64?
+    /// Bytes in the files already finished before this one.
+    public let completedBytes: Int64
+    /// Total bytes of every file in the download; 0 when any size is unknown.
+    public let totalExpectedBytes: Int64
 
+    /// Overall progress. Weighted by bytes when every file size is known — a model is a
+    /// few multi-GB weight files plus a dozen tiny config files, so counting files
+    /// makes the bar leap to ~30-40% on the tiny ones, crawl through the weights, then
+    /// jump to 100%. Falls back to counting files when sizes are unavailable.
     public var overallFraction: Double {
+        if totalExpectedBytes > 0, let fileSizeBytes {
+            let current = fileFractionCompleted * Double(fileSizeBytes)
+            return min((Double(completedBytes) + current) / Double(totalExpectedBytes), 1.0)
+        }
         let fileDone = Double(max(fileIndex - 1, 0)) / Double(max(fileCount, 1))
         let fileProgress = fileFractionCompleted / Double(max(fileCount, 1))
         return min(fileDone + fileProgress, 1.0)
@@ -48,8 +62,14 @@ public struct DownloadFileProgress: Sendable {
         fileFractionCompleted: Double,
         totalBytesDownloaded: Int64,
         speedBytesPerSec: Double?,
-        retryAttempt: Int = 0
+        retryAttempt: Int = 0,
+        fileSizeBytes: Int64? = nil,
+        completedBytes: Int64 = 0,
+        totalExpectedBytes: Int64 = 0
     ) {
+        self.fileSizeBytes = fileSizeBytes
+        self.completedBytes = completedBytes
+        self.totalExpectedBytes = totalExpectedBytes
         self.modelId = modelId
         self.fileName = fileName
         self.fileIndex = fileIndex
@@ -207,7 +227,8 @@ public actor ModelDownloader {
 
     /// Fetch the file list for a model from the HuggingFace REST API.
     private func fetchFileList(modelId: String) async throws -> [(name: String, size: Int64?)] {
-        let url = URL(string: "https://huggingface.co/api/models/\(modelId)")!
+        // `blobs=true` makes the Hub include each file's size; without it `size` is absent.
+        let url = URL(string: "https://huggingface.co/api/models/\(modelId)?blobs=true")!
         let (data, response) = try await URLSession.shared.data(from: url)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw URLError(.badServerResponse)
@@ -437,8 +458,15 @@ public actor ModelDownloader {
         var totalDownloaded: Int64 = 0
         let speedTracker = DownloadSpeedTracker()
 
+        // Byte-weighted progress needs every file's size; otherwise it counts files.
+        let totalExpectedBytes: Int64 = files.allSatisfy { $0.size != nil }
+            ? files.reduce(0) { $0 + ($1.size ?? 0) }
+            : 0
+        var completedBytes: Int64 = 0
+
         for (idx, file) in files.enumerated() {
             try Task.checkCancellation()
+            let completedBeforeFile = completedBytes
 
             let before = ModelStorage.directorySize(at: snapshotDir)
             var lastError: Error?
@@ -464,7 +492,10 @@ public actor ModelDownloader {
                         fileFractionCompleted: 0,
                         totalBytesDownloaded: totalDownloaded,
                         speedBytesPerSec: speedTracker.speedBytesPerSec,
-                        retryAttempt: attempt
+                        retryAttempt: attempt,
+                        fileSizeBytes: file.size,
+                        completedBytes: completedBeforeFile,
+                        totalExpectedBytes: totalExpectedBytes
                     ))
 
                     try await downloadFile(
@@ -482,7 +513,10 @@ public actor ModelDownloader {
                             fileFractionCompleted: fraction,
                             totalBytesDownloaded: totalDownloaded,
                             speedBytesPerSec: speed,
-                            retryAttempt: attempt
+                            retryAttempt: attempt,
+                            fileSizeBytes: file.size,
+                            completedBytes: completedBeforeFile,
+                            totalExpectedBytes: totalExpectedBytes
                         ))
                     }
 
@@ -517,6 +551,7 @@ public actor ModelDownloader {
             let after = ModelStorage.directorySize(at: snapshotDir)
             let downloaded = max(0, after - before)
             totalDownloaded += downloaded
+            completedBytes += file.size ?? downloaded
 
             onProgress(DownloadFileProgress(
                 modelId: modelId,
@@ -526,7 +561,10 @@ public actor ModelDownloader {
                 fileFractionCompleted: 1.0,
                 totalBytesDownloaded: totalDownloaded,
                 speedBytesPerSec: speedTracker.speedBytesPerSec,
-                retryAttempt: 0
+                retryAttempt: 0,
+                fileSizeBytes: file.size,
+                completedBytes: completedBeforeFile,
+                totalExpectedBytes: totalExpectedBytes
             ))
         }
     }

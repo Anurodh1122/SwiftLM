@@ -365,9 +365,8 @@ def pbxproj():
 \t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = "SwiftBuddy Chat";
 \t\t\t\tINFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 SharpAI";
 \t\t\t\tINFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-\t\t\t\tINFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 \t\t\t\tINFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-\t\t\t\tINFOPLIST_KEY_UIFileSharingEnabled = YES;
+\t\t\t\tINFOPLIST_FILE = SwiftBuddy/Info-Extra.plist;
 \t\t\t\tINFOPLIST_KEY_UILaunchScreen_Generation = YES;
 \t\t\t\tINFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 \t\t\t\tINFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -392,7 +391,14 @@ def pbxproj():
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
 \t\t\t\tCURRENT_PROJECT_VERSION = {BUILD_NUMBER};
 \t\t\t\tGENERATE_INFOPLIST_FILE = YES;
+\t\t\t\tINFOPLIST_FILE = SwiftBuddy/Info-Extra.plist;
 \t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = "SwiftBuddy Chat";
+\t\t\t\tINFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 SharpAI";
+\t\t\t\tINFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+\t\t\t\tINFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+\t\t\t\tINFOPLIST_KEY_UILaunchScreen_Generation = YES;
+\t\t\t\tINFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+\t\t\t\tINFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 \t\t\t\tIPHONEOS_DEPLOYMENT_TARGET = 17.0;
 \t\t\t\tMACOS_DEPLOYMENT_TARGET = 14.0;
 \t\t\t\tMARKETING_VERSION = {MARKETING_VERSION};
