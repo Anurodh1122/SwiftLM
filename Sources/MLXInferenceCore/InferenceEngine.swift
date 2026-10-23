@@ -107,10 +107,14 @@ public enum ThermalLevel: Sendable {
 public struct GenerationToken: Sendable {
     public let text: String
     public let isThinking: Bool
+    /// Set only on the empty token that ends a generation: prompt and generated token
+    /// counts, for the API server's `usage` field.
+    public let usage: (prompt: Int, completion: Int)?
 
-    public init(text: String, isThinking: Bool = false) {
+    public init(text: String, isThinking: Bool = false, usage: (prompt: Int, completion: Int)? = nil) {
         self.text = text
         self.isThinking = isThinking
+        self.usage = usage
     }
 }
 
@@ -1121,6 +1125,7 @@ extension InferenceEngine {
                         decodeToksPerSec: decodeTps,
                         draftAcceptanceRate: mtpAcceptanceRate
                     )
+                    continuation.yield(GenerationToken(text: "", usage: (baseTokens, tokenCount)))
                 } catch let ssdError as SSDStreamingError {
                     // Corrupted/truncated safetensors — surface a clear, actionable error
                     let msg = "Model weights are corrupted or incomplete. Please re-download the model."

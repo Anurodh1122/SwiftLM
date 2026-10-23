@@ -238,6 +238,10 @@ final class ServerManager: ObservableObject {
                         return String(raw.dropFirst().dropLast())
                     }
 
+                    func usageJSON(_ usage: (prompt: Int, completion: Int)) -> String {
+                        "\"usage\":{\"prompt_tokens\":\(usage.prompt),\"completion_tokens\":\(usage.completion),\"total_tokens\":\(usage.prompt + usage.completion)}"
+                    }
+
                     if streamRequested {
                         // ── SSE streaming ───────────────────────────────────
                         var sseHeaders = HTTPFields()
@@ -248,6 +252,13 @@ final class ServerManager: ObservableObject {
                         let sseStream = AsyncStream<ByteBuffer> { cont in
                             let producer = Task {
                                 for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api) {
+                                    // The closing token carries the counts. Send them as the
+                                    // final chunk with `finish_reason`, as OpenAI does.
+                                    if let usage = token.usage {
+                                        let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\(usageJSON(usage))}"
+                                        cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
+                                        continue
+                                    }
                                     // Thinking goes in `reasoning_content`, as other OpenAI-style
                                     // servers send it; it used to be mixed into the answer.
                                     let field = token.isThinking ? "reasoning_content" : "content"
@@ -268,11 +279,13 @@ final class ServerManager: ObservableObject {
                         // ── Non-streaming: collect full response ────────────
                         var fullText = ""
                         var reasoning = ""
+                        var usage = (prompt: 0, completion: 0)
                         for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api) {
+                            if let counts = token.usage { usage = counts; continue }
                             if token.isThinking { reasoning += token.text } else { fullText += token.text }
                         }
                         let reasoningField = reasoning.isEmpty ? "" : ",\"reasoning_content\":\"\(jsonEscape(reasoning))\""
-                        let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\(jsonEscape(fullText))\"\(reasoningField)},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}"
+                        let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\(jsonEscape(fullText))\"\(reasoningField)},\"finish_reason\":\"stop\"}],\(usageJSON(usage))}"
                         return Response(status: .ok, headers: swiftBuddyJSONHeaders,
                                         body: .init(byteBuffer: ByteBuffer(string: body)))
                     }
