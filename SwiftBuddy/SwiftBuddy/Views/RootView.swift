@@ -138,7 +138,7 @@ struct RootView: View {
                         }
                     }
                     
-                    Section("Friends (Personas)") {
+                    Section {
                         ForEach(wings) { wing in
                             NavigationLink {
                                 ChatView(viewModel: viewModel)
@@ -167,9 +167,25 @@ struct RootView: View {
                                 .tint(.purple)
                             }
                         }
+                        // The registry was only reachable from the macOS sidebar, so iOS had
+                        // no way to add a persona.
+                        Button {
+                            showPersonaDiscovery = true
+                        } label: {
+                            Label("Get Personas", systemImage: "plus.circle")
+                                .foregroundStyle(SwiftBuddyTheme.accent)
+                        }
+                    } header: {
+                        Text("Friends (Personas)")
+                    } footer: {
+                        Text("Or make your own in the Miner tab: name the persona and paste text about it.")
                     }
                 }
                 .navigationTitle("Connections")
+                .sheet(isPresented: $showPersonaDiscovery) {
+                    PersonaDiscoveryView(registry: registry)
+                        .environmentObject(engine)
+                }
             }
             .tabItem {
                 Label("Chat", systemImage: selectedTab == .chat

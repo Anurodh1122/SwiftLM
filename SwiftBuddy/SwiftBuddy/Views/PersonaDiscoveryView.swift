@@ -77,6 +77,12 @@ struct PersonaDiscoveryView: View {
                 .scrollContentBackground(.hidden)
                 .background(SwiftBuddyTheme.background)
             }
+            // Fetch the list on open instead of showing "No personas found" until Refresh.
+            .task {
+                if registry.availablePersonas.isEmpty, !registry.isSyncing {
+                    await registry.fetchAvailablePersonas()
+                }
+            }
             .navigationTitle("Discover Personas")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
