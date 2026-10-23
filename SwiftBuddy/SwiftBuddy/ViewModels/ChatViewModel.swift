@@ -308,6 +308,35 @@ final class ChatViewModel: ObservableObject {
         messages = []
     }
 
+    /// Deletes the open chat and opens the most recent remaining one (or a fresh chat).
+    func deleteActiveChat() {
+        stopGeneration()
+        guard let context = modelContext, let session = activeSession else {
+            messages = []
+            return
+        }
+        context.delete(session)  // its turns go with it (cascade)
+        try? context.save()
+        activeSession = nil
+        newConversation()
+    }
+
+    /// Deletes every chat of the current persona (or of the core chat), then starts fresh.
+    func deleteAllChats() {
+        stopGeneration()
+        guard let context = modelContext else {
+            messages = []
+            return
+        }
+        let wing = currentWing
+        for session in (try? context.fetch(FetchDescriptor<ChatSession>())) ?? [] where session.wingName == wing {
+            context.delete(session)
+        }
+        try? context.save()
+        activeSession = nil
+        newConversation()
+    }
+
     /// Reopens an earlier chat from the history list.
     func openSession(_ session: ChatSession) {
         guard session.id != activeSession?.id else { return }

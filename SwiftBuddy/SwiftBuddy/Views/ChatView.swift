@@ -15,6 +15,8 @@ struct ChatView: View {
     var showSettings: Binding<Bool>? = nil
     @State private var showCorruptionRecoveryAlert = false
     @State private var showErrorDetail = false
+    @State private var confirmDeleteChat = false
+    @State private var confirmDeleteAllChats = false
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
 
@@ -81,6 +83,12 @@ struct ChatView: View {
                 showCorruptionRecoveryAlert = true
             }
         }
+        .modifier(ChatDeletionDialogs(
+            confirmDeleteChat: $confirmDeleteChat,
+            confirmDeleteAllChats: $confirmDeleteAllChats,
+            deleteChat: { withAnimation { viewModel.deleteActiveChat() } },
+            deleteAllChats: { withAnimation { viewModel.deleteAllChats() } }
+        ))
     }
 
     // MARK: — Message List
@@ -517,6 +525,11 @@ struct ChatView: View {
                             }
                         }
                     }
+                    Section {
+                        Button(role: .destructive) { confirmDeleteAllChats = true } label: {
+                            Label("Delete All Chats…", systemImage: "trash.slash")
+                        }
+                    }
                 }
             } label: {
                 Image(systemName: "square.and.pencil")
@@ -524,9 +537,9 @@ struct ChatView: View {
             }
         }
 
-        // Clear Conversation
+        // Delete this chat (asks first; it used to clear the chat with no confirmation)
         ToolbarItem(placement: .topBarTrailing) {
-            Button { withAnimation { viewModel.clearHistory() } } label: {
+            Button { confirmDeleteChat = true } label: {
                 Image(systemName: "trash")
                     .foregroundStyle(SwiftBuddyTheme.textSecondary)
             }
@@ -597,6 +610,29 @@ struct ChatView: View {
         
     }
     #endif
+}
+
+/// The two delete confirmations, kept out of `ChatView.body`'s modifier chain so the
+/// compiler can still type-check it in reasonable time.
+private struct ChatDeletionDialogs: ViewModifier {
+    @Binding var confirmDeleteChat: Bool
+    @Binding var confirmDeleteAllChats: Bool
+    let deleteChat: () -> Void
+    let deleteAllChats: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Delete this chat?", isPresented: $confirmDeleteChat, titleVisibility: .visible) {
+                Button("Delete Chat", role: .destructive, action: deleteChat)
+            } message: {
+                Text("Its messages are removed for good.")
+            }
+            .confirmationDialog("Delete all chats?", isPresented: $confirmDeleteAllChats, titleVisibility: .visible) {
+                Button("Delete All Chats", role: .destructive, action: deleteAllChats)
+            } message: {
+                Text("Every chat with this persona is removed for good.")
+            }
+    }
 }
 
 // MARK: — ModelState Extensions
