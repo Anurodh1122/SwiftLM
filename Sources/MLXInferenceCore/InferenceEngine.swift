@@ -162,6 +162,9 @@ public final class InferenceEngine: ObservableObject {
     /// The ID of the last model that was successfully loaded. Remains set during .generating.
     public var loadedModelId: String? { currentModelId }
     private var generationTask: Task<Void, Never>?
+    /// True while a `generate` call is running. Generations take turns on the one loaded
+    /// model; the chat, the local API server and tool-call follow-ups all share it.
+    private var isGenerationActive = false
 
     // All NotificationCenter observers collected for clean deregistration
     // nonisolated(unsafe): populated exclusively from MainActor init, read only in deinit
@@ -691,7 +694,18 @@ extension InferenceEngine {
         config: GenerationConfig = .default
     ) -> AsyncStream<GenerationToken> {
         AsyncStream { continuation in
-            Task { @MainActor in
+            let task: Task<Void, Never> = Task { @MainActor in
+                // One generation at a time: wait for any earlier one (including one a client
+                // just abandoned and that is still winding down) instead of running two
+                // forward passes on the same model at once.
+                while self.isGenerationActive {
+                    if Task.isCancelled { continuation.finish(); return }
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                }
+                if Task.isCancelled { continuation.finish(); return }
+                self.isGenerationActive = true
+                defer { self.isGenerationActive = false }
+
                 guard let container = self.container else {
                     continuation.finish(); return
                 }
@@ -913,6 +927,12 @@ extension InferenceEngine {
                 }
                 continuation.finish()
             }
+
+            // When the consumer goes away (Stop pressed, chat switched, API client dropped)
+            // stop producing; before this the model kept generating to the token limit.
+            continuation.onTermination = { _ in task.cancel() }
+            // So `stopGeneration()` and unloading can cancel the run in progress as well.
+            Task { @MainActor in self.generationTask = task }
         }
     }
 

@@ -141,6 +141,12 @@ final class ChatViewModel: ObservableObject {
                     }
                 }
 
+                // Stop (or switching chats) cancels this task. `stopGeneration()` has already
+                // saved the partial reply and reset the UI, so committing `response` again here
+                // duplicated it, could land it in the next conversation, and could even run a
+                // tool the user had just stopped.
+                if Task.isCancelled { return }
+
                 // First, check if there's a tool call in the complete response
                 if let toolCall = ExtractionService.extractToolCall(from: response) {
                     // Extract text BEFORE the tool call to save as assistant message
@@ -207,6 +213,12 @@ final class ChatViewModel: ObservableObject {
                 thinkingText = nil
                 isGenerating = false
             } // end while
+
+            // The loop can end on its depth limit straight after a tool call, which skips the
+            // reset at the end of an iteration and left `isGenerating` stuck on, locking the chat.
+            streamingText = ""
+            thinkingText = nil
+            isGenerating = false
         }
 
         await generationTask?.value
