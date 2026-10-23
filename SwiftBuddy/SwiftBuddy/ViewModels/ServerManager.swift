@@ -210,6 +210,15 @@ final class ServerManager: ObservableObject {
                     if let p  = json["top_p"]             as? Double { reqConfig.topP               = Float(p) }
                     if let mt = json["max_tokens"]        as? Int    { reqConfig.maxTokens           = mt }
                     if let rp = json["frequency_penalty"] as? Double { reqConfig.repetitionPenalty  = Float(rp) }
+                    // Thinking per request, as vLLM and llama.cpp take it; otherwise the
+                    // app's Thinking setting applies.
+                    if let kwargs = json["chat_template_kwargs"] as? [String: Any],
+                       let think = kwargs["enable_thinking"] as? Bool { reqConfig.enableThinking = think }
+                    else if let think = json["enable_thinking"] as? Bool { reqConfig.enableThinking = think }
+                    let maxTokens = reqConfig.maxTokens
+                    func finishReason(_ usage: (prompt: Int, completion: Int)) -> String {
+                        usage.completion >= maxTokens ? "length" : "stop"
+                    }
 
                     // No model: say so instead of answering 200 with an empty reply. A
                     // request that arrives mid-generation still waits its turn.
@@ -255,7 +264,7 @@ final class ServerManager: ObservableObject {
                                     // The closing token carries the counts. Send them as the
                                     // final chunk with `finish_reason`, as OpenAI does.
                                     if let usage = token.usage {
-                                        let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\(usageJSON(usage))}"
+                                        let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"\(finishReason(usage))\"}],\(usageJSON(usage))}"
                                         cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
                                         continue
                                     }
@@ -285,7 +294,7 @@ final class ServerManager: ObservableObject {
                             if token.isThinking { reasoning += token.text } else { fullText += token.text }
                         }
                         let reasoningField = reasoning.isEmpty ? "" : ",\"reasoning_content\":\"\(jsonEscape(reasoning))\""
-                        let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\(jsonEscape(fullText))\"\(reasoningField)},\"finish_reason\":\"stop\"}],\(usageJSON(usage))}"
+                        let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\(jsonEscape(fullText))\"\(reasoningField)},\"finish_reason\":\"\(finishReason(usage))\"}],\(usageJSON(usage))}"
                         return Response(status: .ok, headers: swiftBuddyJSONHeaders,
                                         body: .init(byteBuffer: ByteBuffer(string: body)))
                     }

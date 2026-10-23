@@ -94,14 +94,26 @@ struct MessageBubble: View {
                         .padding(.horizontal, 14)
                 }
                 
-                Text(cleanText)
+                Group {
+                    if isUser {
+                        Text(cleanText)
+                    } else {
+                        MarkdownText(text: cleanText, design: .serif)
+                    }
+                }
                     .font(.system(.body, design: .serif))
                     .lineSpacing(4)
                     .textSelection(.enabled)
                     .foregroundStyle(.white.opacity(0.95))
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
+                    .padding(.bottom, isUser ? 16 : 6)
                     .padding(.top, 2)
+
+                if !isUser {
+                    MessageFooter(message: message)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -145,8 +157,7 @@ struct MessageBubble: View {
             }
             
             if !message.content.isEmpty {
-                Text(message.content)
-                    .font(.system(.body, design: .default))
+                MarkdownText(text: message.content)
                     .textSelection(.enabled)
                     .foregroundStyle(SwiftBuddyTheme.textPrimary)
                     .padding(.horizontal, 14)
@@ -164,8 +175,66 @@ struct MessageBubble: View {
                         x: SwiftBuddyTheme.shadowBubble.x,
                         y: SwiftBuddyTheme.shadowBubble.y
                     )
+
+                MessageFooter(message: message)
+                    .padding(.leading, 6)
             }
         }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MARK: — Reply Footer
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Under each reply: copy, read aloud, and how fast it was generated.
+struct MessageFooter: View {
+    let message: ChatMessage
+    @ObservedObject private var speech = SpeechPlayer.shared
+    @State private var copied = false
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Button {
+                #if os(iOS)
+                UIPasteboard.general.string = message.content
+                #else
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message.content, forType: .string)
+                #endif
+                copied = true
+                Task {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    copied = false
+                }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc")
+            }
+            .accessibilityLabel("Copy")
+
+            Button {
+                speech.toggle(id: message.id, text: message.content)
+            } label: {
+                Image(systemName: speech.speakingID == message.id ? "stop.fill" : "speaker.wave.2")
+            }
+            .accessibilityLabel(speech.speakingID == message.id ? "Stop reading" : "Read aloud")
+
+            if let stats = message.stats {
+                Text(Self.summary(stats))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(SwiftBuddyTheme.textTertiary)
+        .buttonStyle(.plain)
+    }
+
+    static func summary(_ stats: ChatMessage.GenerationStats) -> String {
+        var parts = ["\(stats.tokens) tokens"]
+        if stats.tokensPerSecond > 0 { parts.append(String(format: "%.1f tok/s", stats.tokensPerSecond)) }
+        if stats.timeToFirstToken > 0 { parts.append(String(format: "%.1f s to first token", stats.timeToFirstToken)) }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -238,8 +307,7 @@ struct StreamingBubble: View {
                 
                 if !text.isEmpty {
                     HStack(alignment: .bottom, spacing: 0) {
-                        Text(text)
-                            .font(.system(.body, design: .serif))
+                        MarkdownText(text: text, design: .serif)
                             .lineSpacing(4)
                             .textSelection(.enabled)
                             .foregroundStyle(.white.opacity(0.95))
@@ -273,8 +341,7 @@ struct StreamingBubble: View {
     private var streamingText: some View {
         // Inline blinking cursor via attributed string approach
         HStack(alignment: .bottom, spacing: 0) {
-            Text(text)
-                .font(.system(.body, design: .default))
+            MarkdownText(text: text)
                 .foregroundStyle(SwiftBuddyTheme.textPrimary)
                 .textSelection(.enabled)
             BlinkingCursor()

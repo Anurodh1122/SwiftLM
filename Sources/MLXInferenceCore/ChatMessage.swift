@@ -10,6 +10,20 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     public var content: String
     public var thinkingContent: String?
     public let timestamp: Date
+    /// How a reply was generated, shown under it. Only set on replies from this session.
+    public var stats: GenerationStats?
+
+    public struct GenerationStats: Codable, Equatable, Sendable {
+        public var tokens: Int
+        public var tokensPerSecond: Double
+        public var timeToFirstToken: Double
+
+        public init(tokens: Int, tokensPerSecond: Double, timeToFirstToken: Double) {
+            self.tokens = tokens
+            self.tokensPerSecond = tokensPerSecond
+            self.timeToFirstToken = timeToFirstToken
+        }
+    }
 
     public enum Role: String, Codable, Sendable {
         case system

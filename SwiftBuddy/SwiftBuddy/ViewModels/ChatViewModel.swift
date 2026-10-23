@@ -109,9 +109,11 @@ final class ChatViewModel: ObservableObject {
                 var liveText = ""
                 var liveThinking: String? = nil
                 var lastPublish = Date.distantPast
+                var generatedTokens = 0
 
                 for await token in engine.generate(messages: latestMessages, config: config) {
                     guard !Task.isCancelled else { break }
+                    if let usage = token.usage { generatedTokens = usage.completion; continue }
                     defer {
                         let now = Date()
                         if now.timeIntervalSince(lastPublish) >= 0.08 {
@@ -240,7 +242,14 @@ final class ChatViewModel: ObservableObject {
                     
                     print("[Chat] round \(depth): saving \(finalVisible.count) visible chars")
                     if !finalVisible.isEmpty {
-                        let msg = ChatMessage.assistant(finalVisible, thinkingContent: thinkingText)
+                        var msg = ChatMessage.assistant(finalVisible, thinkingContent: thinkingText)
+                        // The engine publishes these just before its closing usage token.
+                        if generatedTokens > 0 {
+                            let metrics = engine.lastMetrics
+                            msg.stats = .init(tokens: generatedTokens,
+                                              tokensPerSecond: metrics.decodeToksPerSec,
+                                              timeToFirstToken: metrics.ttft)
+                        }
                         messages.append(msg)
                         if let context = modelContext, let session = activeSession {
                             let turn = ChatTurn(id: msg.id, roleRaw: "assistant", content: msg.content, thinkingContent: thinkingText, timestamp: msg.timestamp, session: session)
