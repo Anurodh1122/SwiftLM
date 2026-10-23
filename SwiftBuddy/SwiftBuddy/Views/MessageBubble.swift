@@ -15,7 +15,6 @@ struct MessageBubble: View {
     
     @State private var showTimestamp = false
     @State private var thinkingExpanded = false
-    @EnvironmentObject private var engine: InferenceEngine
 
     var isUser: Bool { message.role == .user }
 
@@ -248,7 +247,6 @@ struct StreamingBubble: View {
     var isRPGMode: Bool = false
     var personaName: String? = nil
 
-    @EnvironmentObject private var engine: InferenceEngine
     @State private var thinkingExpanded = true
 
     var body: some View {

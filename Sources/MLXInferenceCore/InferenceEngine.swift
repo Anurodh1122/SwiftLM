@@ -1049,6 +1049,9 @@ extension InferenceEngine {
 
                     for await generation in stream {
                         guard !Task.isCancelled, !self.stopRequested else { break }
+                        // Checked before the next chunk, not after counting this one, which
+                        // dropped the last token of every reply that reached the limit.
+                        if case .chunk = generation, tokenCount >= config.maxTokens { break }
 
                         if case .chunk(let text, tokenId: _) = generation {
                             // Record time-to-first-token on the very first chunk
@@ -1065,7 +1068,6 @@ extension InferenceEngine {
                                 self.activeContextTokens = baseTokens + tokenCount
                             }
 
-                            if tokenCount >= config.maxTokens { break }
                             
                             // Hard-stop constraint for Gemma 2/3 and DeepSeek MoE bounds since MLX fails to parse multi-array JSON eos_token_id manifests.
                             if outputText.contains("<end_of_turn>") || outputText.contains("<|im_end|>") || outputText.contains("<|eot_id|>") {
