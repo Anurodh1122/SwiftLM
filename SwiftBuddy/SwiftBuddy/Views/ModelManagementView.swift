@@ -70,7 +70,7 @@ struct ModelManagementView: View {
             })
             .safeAreaInset(edge: .bottom) {
                 if let (modelId, progress) = dm.activeDownloads.first {
-                    FloatingDownloadBanner(modelId: modelId, progress: progress)
+                    FloatingDownloadBanner(modelId: modelId, progress: progress, onCancel: { dm.cancelDownload(modelId: modelId) })
                         .padding(.vertical, 8)
                         .background(
                             Rectangle()
@@ -104,7 +104,7 @@ struct ModelManagementView: View {
                 }
                 .safeAreaInset(edge: .bottom) {
                     if let (modelId, progress) = dm.activeDownloads.first {
-                        FloatingDownloadBanner(modelId: modelId, progress: progress)
+                        FloatingDownloadBanner(modelId: modelId, progress: progress, onCancel: { dm.cancelDownload(modelId: modelId) })
                             .padding(.vertical, 8)
                             // Match the background style of the floating banner in chat
                             .background(

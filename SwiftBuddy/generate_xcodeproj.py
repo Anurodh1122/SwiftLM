@@ -357,8 +357,8 @@ def pbxproj():
 \t\t{TGT_DEBUG} /* Debug */ = {{
 \t\t\tisa = XCBuildConfiguration;
 \t\t\tbuildSettings = {{
-\t\t\t\tASSTCATALOG_COMPILER_APPICON_NAME = AppIcon;
-\t\t\t\tASSTCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+\t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+\t\t\t\tASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
 \t\t\t\tCURRENT_PROJECT_VERSION = {BUILD_NUMBER};
 \t\t\t\tGENERATE_INFOPLIST_FILE = YES;
@@ -385,8 +385,8 @@ def pbxproj():
 \t\t{TGT_RELEASE} /* Release */ = {{
 \t\t\tisa = XCBuildConfiguration;
 \t\t\tbuildSettings = {{
-\t\t\t\tASSTCATALOG_COMPILER_APPICON_NAME = AppIcon;
-\t\t\t\tASSTCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+\t\t\t\tASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+\t\t\t\tASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 \t\t\t\tCODE_SIGN_STYLE = Automatic;
 \t\t\t\tCURRENT_PROJECT_VERSION = {BUILD_NUMBER};
 \t\t\t\tGENERATE_INFOPLIST_FILE = YES;

@@ -135,7 +135,13 @@ struct ChatView: View {
         switch engine.state {
 
         case .downloading(let progress, let speed):
-            DownloadAnimationView(progress: progress, speed: speed)
+            VStack(spacing: 16) {
+                DownloadAnimationView(progress: progress, speed: speed)
+                Button("Cancel Download", role: .destructive) {
+                    engine.downloadManager.cancelAllDownloads()
+                }
+                .buttonStyle(.bordered)
+            }
 
         case .loading(let progress, let stage):
             VStack(spacing: 16) {
@@ -287,6 +293,9 @@ struct ChatView: View {
                     Text("\(Int(p * 100))% · \(speed)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                    Button("Cancel") { engine.downloadManager.cancelAllDownloads() }
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(SwiftBuddyTheme.error)
                 }
                 ProgressView(value: p).tint(SwiftBuddyTheme.accent)
             }

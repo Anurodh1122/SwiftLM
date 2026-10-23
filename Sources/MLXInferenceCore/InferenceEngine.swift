@@ -364,6 +364,9 @@ public final class InferenceEngine: ObservableObject {
             await loadVerifiedModel(modelId: modelId)
         } catch is CancellationError {
             state = .idle
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            // URLSession reports a cancelled transfer this way instead of CancellationError.
+            state = .idle
         } catch {
             state = .error("Failed to download \(modelId): \(error.localizedDescription)")
         }
