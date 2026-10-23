@@ -190,6 +190,16 @@ public final class InferenceEngine: ObservableObject {
     /// Who started the generation that currently holds the turn, so the UI can say when
     /// the model is busy answering the local API server rather than the chat.
     @Published public private(set) var generationOrigin: GenerationOrigin = .app
+    /// Prompt chunk size while SSD expert streaming is active on iOS; nil otherwise.
+    ///
+    /// mlx-swift-lm's streaming SwitchGLU keeps a small set of reused buffers for up to
+    /// 32 routed experts per layer (its single-token path). A larger batch — any prompt
+    /// chunk over `32 / experts_per_token` tokens — takes its prompt path instead, which
+    /// holds buffers for every routed expert of every layer until the pass ends. On an
+    /// 8 GB iPad (5 GB app ceiling) that killed the app on the first message to
+    /// Qwen3.6-35B-A3B. Prefilling in chunks that stay on the bounded path keeps memory
+    /// flat, at the cost of a slower prompt.
+    private var streamingPrefillStepSize: Int?
 
     // All NotificationCenter observers collected for clean deregistration
     // nonisolated(unsafe): populated exclusively from MainActor init, read only in deinit
@@ -513,6 +523,7 @@ public final class InferenceEngine: ObservableObject {
             // (lazy weights, per-layer evals skipped) with nothing to stream, and such models
             // then fail to load — so streaming applies to MoE models only.
             let shouldStream = isMoE && generationConfig.effectiveStreamExperts(defaultingTo: isMoE)
+            streamingPrefillStepSize = nil
             if shouldStream {
                 config.lazyLoad = true
                 let modelDir = explicitLocalDirectory ?? ModelStorage.snapshotDirectory(for: modelId)
@@ -526,7 +537,13 @@ public final class InferenceEngine: ObservableObject {
                         #endif
                     }()
                 )
-                print("[InferenceEngine] SSD expert streaming: enabled (isMoE=\(isMoE), persisted=\(GenerationConfig.hasPersistedConfig), setting=\(generationConfig.streamExperts))")
+                #if os(iOS)
+                let modelConfig = explicitLocalDirectory.flatMap(ModelStorage.readModelConfig(inDirectory:))
+                    ?? ModelStorage.readModelConfig(for: modelId)
+                let expertsPerToken = modelConfig.flatMap(Self.expertsPerToken(in:)) ?? 8
+                streamingPrefillStepSize = max(1, 32 / max(expertsPerToken, 1))
+                #endif
+                print("[InferenceEngine] SSD expert streaming: enabled (isMoE=\(isMoE), persisted=\(GenerationConfig.hasPersistedConfig), setting=\(generationConfig.streamExperts), prefill chunk=\(streamingPrefillStepSize.map { "\($0)" } ?? "default"))")
             } else {
                 print("[InferenceEngine] SSD expert streaming: disabled")
             }
@@ -684,9 +701,16 @@ public final class InferenceEngine: ObservableObject {
         state = .idle
     }
 
+    /// `num_experts_per_tok` from a model config, top level or inside `text_config`.
+    private static func expertsPerToken(in config: [String: Any]) -> Int? {
+        if let value = config["num_experts_per_tok"] as? Int { return value }
+        return (config["text_config"] as? [String: Any])?["num_experts_per_tok"] as? Int
+    }
+
     private func releaseLoadedModelResources() {
         if isGenerationActive { stopRequested = true }
         loadToken &+= 1
+        streamingPrefillStepSize = nil
         container = nil
         currentModelId = nil
         maxContextWindow = 0
@@ -857,7 +881,8 @@ extension InferenceEngine {
                         topK: config.topK,
                         minP: config.minP,
                         repetitionPenalty: config.repetitionPenalty,
-                        prefillStepSize: config.prefillSize
+                        prefillStepSize: self.streamingPrefillStepSize.map { min($0, config.prefillSize) }
+                            ?? config.prefillSize
                     )
                     params.repetitionContextSize = 20
 
