@@ -11,6 +11,9 @@ import Tokenizers
 #if canImport(UIKit)
 import UIKit
 #endif
+#if os(iOS)
+import os
+#endif
 
 // MARK: — Hub Downloader bridge (Downloader protocol conformance over HubApi)
 
@@ -220,13 +223,29 @@ public final class InferenceEngine: ObservableObject {
         // SSD-streamed MoE models: keep recently used experts in a per-layer LRU cache and
         // run one matmul per projection over it. The default path re-read every expert of
         // the previous token from storage on each token and issued a matmul per expert,
-        // which held the 35B-A3B to about 1.3 tokens/s. 12 slots of ~1.6 MB across 40
-        // layers is ~0.75 GB, which fits next to the resident weights in the ~5 GB limit.
+        // which held the 35B-A3B to about 1.3 tokens/s. 16 slots of ~1.6 MB across 40
+        // layers is ~1 GB, next to ~3.3 GB of resident weights in the ~5 GB limit.
         // The library reads these once, on the first MoE forward pass, so set them first.
         setenv("MLX_MOE_STACKED", "1", 0)
-        setenv("MLX_MOE_CACHE_SLOTS", "12", 0)
+        setenv("MLX_MOE_CACHE_SLOTS", "\(Self.expertCacheSlots)", 0)
         #endif
         setupPressureHandlers()
+    }
+
+    /// Expert cache slots per MoE layer when streaming on iOS (see `init`).
+    static let expertCacheSlots = 16
+
+    /// Experts routed per token (`num_experts_per_tok`), at the top level or in `text_config`.
+    static func expertsPerToken(_ config: [String: Any]) -> Int? {
+        if let k = config["num_experts_per_tok"] as? Int { return k }
+        return (config["text_config"] as? [String: Any])?["num_experts_per_tok"] as? Int
+    }
+
+    private func localConfigForStreaming(modelId: String, explicitLocalDirectory: URL?) -> [String: Any]? {
+        if let explicitLocalDirectory {
+            return ModelStorage.readModelConfig(inDirectory: explicitLocalDirectory)
+        }
+        return ModelStorage.readModelConfig(for: modelId)
     }
 
     deinit {
@@ -557,7 +576,13 @@ public final class InferenceEngine: ObservableObject {
                     }()
                 )
                 #if os(iOS)
-                streamingPrefillStepSize = 1
+                // As many prompt tokens per step as the expert cache can hold at once:
+                // a step routing more experts than there are cache slots falls back to a
+                // path whose buffers grow to tokens × top-k per layer (32 slots at 4
+                // tokens, ~2 GB on the 35B-A3B, which is what ran out of memory before).
+                let topK = (localConfigForStreaming(modelId: modelId, explicitLocalDirectory: explicitLocalDirectory)
+                    .flatMap(Self.expertsPerToken)) ?? 8
+                streamingPrefillStepSize = max(1, Self.expertCacheSlots / max(topK, 1))
                 #endif
                 print("[InferenceEngine] SSD expert streaming: enabled (isMoE=\(isMoE), persisted=\(GenerationConfig.hasPersistedConfig), setting=\(generationConfig.streamExperts), prefill chunk=\(streamingPrefillStepSize.map { "\($0)" } ?? "default"))")
             } else {
@@ -643,8 +668,15 @@ public final class InferenceEngine: ObservableObject {
 
             #if os(iOS)
             // Cap MLX's reusable-buffer cache. Uncapped, it grows with every generation
-            // until iOS kills the app for its memory footprint.
-            MLX.Memory.cacheLimit = 256 * 1024 * 1024
+            // until iOS kills the app for its memory footprint. A quarter of what is left
+            // after loading, between 128 and 512 MB: a small model gets more reuse (fewer
+            // fresh allocations per token), a model near the limit keeps its headroom.
+            // Streaming allocates its expert cache (~1 GB) on the first token, after this
+            // reading, so it stays at the earlier 256 MB.
+            let available = Int(os_proc_available_memory())
+            let ceiling = ExpertStreamingConfig.shared.isEnabled ? 256 << 20 : 512 << 20
+            MLX.Memory.cacheLimit = min(ceiling, max(128 << 20, available / 4))
+            print("[InferenceEngine] buffer cache limit: \(MLX.Memory.cacheLimit >> 20) MB (\(available >> 20) MB available)")
             #endif
             state = .ready(modelId: modelId)
 
