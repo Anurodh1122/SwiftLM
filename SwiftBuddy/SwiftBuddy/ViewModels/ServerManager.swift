@@ -293,6 +293,9 @@ final class ServerManager: ObservableObject {
                             if let counts = token.usage { usage = counts; continue }
                             if token.isThinking { reasoning += token.text } else { fullText += token.text }
                         }
+                        // The answer follows the thought after a blank line.
+                        fullText = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        reasoning = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
                         let reasoningField = reasoning.isEmpty ? "" : ",\"reasoning_content\":\"\(jsonEscape(reasoning))\""
                         let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\(jsonEscape(fullText))\"\(reasoningField)},\"finish_reason\":\"\(finishReason(usage))\"}],\(usageJSON(usage))}"
                         return Response(status: .ok, headers: swiftBuddyJSONHeaders,

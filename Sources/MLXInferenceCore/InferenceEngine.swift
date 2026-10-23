@@ -995,6 +995,18 @@ extension InferenceEngine {
                     let baseTokens = lmInput.text.tokens.size
                     self.activeContextTokens = baseTokens
                     print("[InferenceEngine] prompt: \(baseTokens) tokens")
+
+                    // Qwen3/3.5/3.6 templates end the prompt with `<think>\n` when thinking is
+                    // on, so the reply starts inside the thought with no opening tag, and the
+                    // thinking went out as answer text (to API clients with the tags).
+                    if config.enableThinking {
+                        let tail = await container.tokenizer.decode(
+                            tokenIds: Array(lmInput.text.tokens.asArray(Int.self).suffix(32)),
+                            skipSpecialTokens: false)
+                        if let open = tail.range(of: "<think>", options: .backwards) {
+                            thinkingActive = tail.range(of: "</think>", range: open.upperBound ..< tail.endIndex) == nil
+                        }
+                    }
                     
                     // maxContextWindow is already set during loadModel() from config.json
 
@@ -1064,15 +1076,24 @@ extension InferenceEngine {
                                 break
                             }
 
-                            if config.enableThinking {
-                                if outputText.contains("<think>") && !outputText.contains("</think>") {
-                                    thinkingActive = true
-                                } else if outputText.contains("</think>") {
-                                    thinkingActive = false
+                            if config.enableThinking, text.contains("<think>") || text.contains("</think>") {
+                                // The tags mark where thinking starts and ends: pass on the
+                                // text either side with its own flag, not the tags themselves.
+                                var rest = Substring(text)
+                                while let tag = rest.range(of: thinkingActive ? "</think>" : "<think>") {
+                                    let before = rest[..<tag.lowerBound]
+                                    if !before.isEmpty {
+                                        continuation.yield(GenerationToken(text: String(before), isThinking: thinkingActive))
+                                    }
+                                    thinkingActive.toggle()
+                                    rest = rest[tag.upperBound...]
                                 }
+                                if !rest.isEmpty {
+                                    continuation.yield(GenerationToken(text: String(rest), isThinking: thinkingActive))
+                                }
+                            } else {
+                                continuation.yield(GenerationToken(text: text, isThinking: thinkingActive))
                             }
-
-                            continuation.yield(GenerationToken(text: text, isThinking: thinkingActive))
                         } else if case .toolCall(let call) = generation {
                             // mlx-swift-lm recognises the model's tool call and emits it as
                             // an event instead of text. The app runs tools from
