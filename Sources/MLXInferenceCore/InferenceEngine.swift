@@ -132,7 +132,14 @@ public struct InferenceMetrics: Sendable {
 
 @MainActor
 public final class InferenceEngine: ObservableObject {
-    @Published public private(set) var state: ModelState = .idle
+    @Published public private(set) var state: ModelState = .idle {
+        didSet {
+            if case .error = state {} else { errorDetail = nil }
+        }
+    }
+    /// The full reason behind the current `.error` state. The state itself carries only a
+    /// one-line summary, so status bars stay short; screens offer this on request.
+    @Published public private(set) var errorDetail: String?
     @Published public private(set) var thermalLevel: ThermalLevel = .nominal
     @Published public private(set) var activeContextTokens: Int = 0
     @Published public private(set) var maxContextWindow: Int = 0
@@ -210,16 +217,17 @@ public final class InferenceEngine: ObservableObject {
                 object: nil, queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    switch self.state {
-                    // Don't interrupt mid-stream. Loading a large model raises warnings
-                    // routinely; unloading then tore down SSD streaming mid-load and left
-                    // a half-loaded model behind.
-                    case .generating, .loading, .downloading: return
-                    default: break
-                    }
+                    // Only a loaded, idle model is unloaded. Not mid-stream; not mid-load
+                    // (loading a large model raises warnings routinely, and unloading then
+                    // tore down SSD streaming and left a half-loaded model); and not when
+                    // nothing is loaded — iOS keeps sending warnings after a manual unload,
+                    // which used to replace "No model loaded" with an error.
+                    guard let self, case .ready = self.state else { return }
                     self.unload()
-                    self.state = .error("Unloaded due to memory pressure. Tap to reload.")
+                    self.fail(
+                        "Model unloaded to free memory.",
+                        detail: "iOS was running low on memory. Load the model again from the Models tab."
+                    )
                 }
             }
         )
@@ -324,7 +332,7 @@ public final class InferenceEngine: ObservableObject {
         // Only critical blocks a load: iPads reach "serious" just from charging while
         // downloading, which made models refuse to load for no visible reason.
         guard thermalLevel != .critical else {
-            state = .error("Device is too hot. Let it cool before loading a model.")
+            fail("Device is too hot. Let it cool before loading a model.")
             return
         }
         guard !isLoadInFlight else {
@@ -354,9 +362,9 @@ public final class InferenceEngine: ObservableObject {
         // would fall through to verifyModelIntegrity/downloadThenLoad below and
         // try to download the raw filesystem path as if it were a repo id.
         if modelId.hasPrefix("/") {
-            state = .error(
-                "Can't find \"\(URL(filePath: modelId).lastPathComponent)\" — the folder may have "
-                    + "moved or its drive isn't connected."
+            fail(
+                "Can't find \"\(URL(filePath: modelId).lastPathComponent)\".",
+                detail: "The folder may have moved or its drive isn't connected."
             )
             return
         }
@@ -395,7 +403,10 @@ public final class InferenceEngine: ObservableObject {
             // URLSession reports a cancelled transfer this way instead of CancellationError.
             state = .idle
         } catch {
-            state = .error("Failed to download \(modelId): \(error.localizedDescription)")
+            fail(
+                "Couldn't download \(modelId.components(separatedBy: "/").last ?? modelId).",
+                detail: error.localizedDescription
+            )
         }
     }
 
@@ -586,8 +597,9 @@ public final class InferenceEngine: ObservableObject {
             // elsewhere in the app already display HF ids trimmed to their last
             // component, rather than a raw POSIX path that wraps awkwardly in a
             // narrow error banner.
-            let displayName = explicitLocalDirectory?.lastPathComponent ?? modelId
-            state = .error("Failed to load \(displayName): \(error.localizedDescription)")
+            let displayName = explicitLocalDirectory?.lastPathComponent
+                ?? (modelId.components(separatedBy: "/").last ?? modelId)
+            fail("Couldn't load \(displayName).", detail: error.localizedDescription)
 
             // If the model is incomplete/corrupted, flag it so the UI shows the "Delete
             // & Re-download" button. markModelCorrupted itself no-ops corruptedModelId
@@ -621,12 +633,20 @@ public final class InferenceEngine: ObservableObject {
         let name = ModelStorage.isLocalDirectoryPath(modelId)
             ? URL(filePath: modelId).lastPathComponent
             : (modelId.components(separatedBy: "/").last ?? modelId)
-        state = .error(
-            "The app stopped while loading \(name), most likely because it ran out of memory, "
-            + "so it was not reloaded automatically. Try a smaller model, or turn on SSD Streaming "
-            + "for MoE models."
+        fail(
+            "Didn't reload \(name) automatically.",
+            detail: "The app stopped while loading it last time, most likely because it ran out of "
+                + "memory. Try a smaller model, or turn on SSD Streaming for MoE models."
         )
         return true
+    }
+
+    /// Enters `.error` with a one-line `summary` for status bars and keeps the full
+    /// reason in `errorDetail`.
+    private func fail(_ summary: String, detail: String? = nil) {
+        state = .error(summary)
+        errorDetail = detail
+        print("[InferenceEngine] \(summary)" + (detail.map { " \($0)" } ?? ""))
     }
 
     /// Unload the current model and free all GPU memory.
@@ -664,7 +684,7 @@ public final class InferenceEngine: ObservableObject {
     private func markModelCorrupted(modelId: String?, message: String) {
         let failedModelId = modelId ?? currentModelId
         releaseLoadedModelResources()
-        state = .error(message)
+        fail(message)
         if let failedModelId, ModelStorage.isLocalDirectoryPath(failedModelId) {
             corruptedModelId = nil
         } else {
@@ -1002,7 +1022,7 @@ extension InferenceEngine {
             print("[InferenceEngine] Successfully deleted corrupted cache directory for \(modelId).")
         } catch {
             print("[InferenceEngine] FAILED to delete corrupted cache: \(error.localizedDescription)")
-            state = .error("Failed to delete corrupted model: \(error.localizedDescription)")
+            fail("Couldn't delete the corrupted model.", detail: error.localizedDescription)
             return
         }
         downloadManager.refresh()

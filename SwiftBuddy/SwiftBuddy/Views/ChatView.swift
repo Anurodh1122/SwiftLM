@@ -13,6 +13,7 @@ struct ChatView: View {
     // macOS-only sheet control (iOS: these are tabs)
     var showSettings: Binding<Bool>? = nil
     @State private var showCorruptionRecoveryAlert = false
+    @State private var showErrorDetail = false
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
 
@@ -175,14 +176,27 @@ struct ChatView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 44))
                     .foregroundStyle(SwiftBuddyTheme.error)
-                Text("Load failed")
+                Text(msg)
                     .font(.headline)
                     .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                Text(msg)
-                    .font(.caption)
-                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 40)
+                if let detail = engine.errorDetail {
+                    if showErrorDetail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 40)
+                    }
+                    Button(showErrorDetail ? "Hide details" : "Details") {
+                        showErrorDetail.toggle()
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(SwiftBuddyTheme.accent)
+                    .buttonStyle(.plain)
+                }
 
                 if engine.corruptedModelId != nil {
                     Button(role: .destructive) {
@@ -311,6 +325,7 @@ struct ChatView: View {
                         Text(msg)
                             .font(.caption)
                             .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                            .lineLimit(1)
                     }
                     Button(role: .destructive) {
                         engine.deleteCorruptedAndRedownload()
@@ -354,7 +369,7 @@ struct ChatView: View {
             Text(text)
                 .font(.caption)
                 .foregroundStyle(color)
-                .lineLimit(2)
+                .lineLimit(1)
             Spacer()
         }
         .padding(.horizontal, 16)

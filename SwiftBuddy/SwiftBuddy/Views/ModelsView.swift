@@ -308,6 +308,7 @@ extension ModelsView {
 
 private struct ActiveModelCardView: View {
     @EnvironmentObject private var engine: InferenceEngine
+    @State private var showErrorDetail = false
 
     var body: some View {
         Group {
@@ -382,24 +383,37 @@ private struct ActiveModelCardView: View {
     }
 
     /// A failed load used to show the same "No model loaded" card as idle, so the reason
-    /// was only visible on the Chat tab. Show it here too.
+    /// was only visible on the Chat tab. Show it here too: the one-line summary, with the
+    /// full reason behind a "Details" toggle.
     private func errorCard(message: String) -> some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.title3)
                 .foregroundStyle(SwiftBuddyTheme.warning)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Couldn't load the model")
+                Text(message)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(SwiftBuddyTheme.textPrimary)
-                Text(message)
-                    .font(.caption)
-                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
+                    .lineLimit(2)
+                if let detail = engine.errorDetail {
+                    if showErrorDetail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    Button(showErrorDetail ? "Hide details" : "Details") {
+                        showErrorDetail.toggle()
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(SwiftBuddyTheme.accent)
+                    .buttonStyle(.plain)
+                }
             }
             Spacer()
         }
+        .onChange(of: engine.errorDetail) { _, _ in showErrorDetail = false }
         .padding()
         .glassCard(cornerRadius: SwiftBuddyTheme.radiusLarge)
     }
