@@ -149,6 +149,29 @@ jobs:
           print("patched", path)
           PY
 
+      # Streaming evaluates and preads experts mid-layer, which a compiled trace can't
+      # contain ("[async_eval] Not allowed inside a graph transformation"). The text-only
+      # Qwen3.5 MoE block already skips its trace while streaming; the VLM one (which the
+      # Qwen3.6 MLX checkpoints load as) didn't, and its layer and segment traces follow it.
+      - name: Patch Qwen3.5 VLM compiled decode for SSD streaming
+        run: |
+          python3 - <<'PY'
+          import sys
+          path = "mlx-swift-lm/Libraries/MLXVLM/Models/Qwen35.swift"
+          src = open(path, encoding="utf-8").read()
+          old = "type(of: self) == SparseMoeBlock.self && type(of: switchMLP) == SwitchGLU.self\n"
+          new = ("type(of: self) == SparseMoeBlock.self && type(of: switchMLP) == SwitchGLU.self\n"
+                 "                && !ExpertStreamingConfig.shared.isEnabled\n")
+          if src.count(new) == 1:
+              print("already patched, skipping")
+          elif src.count(old) == 1:
+              src = src.replace(old, new, 1)
+              open(path, "w", encoding="utf-8").write(src)
+              print("patched", path)
+          else:
+              sys.exit("Expected code not found in " + path + "; update the patch step.")
+          PY
+
       - name: Build for iOS (unsigned)
         run: |
           # Plain `build` (not `archive`) with signing disabled yields an unsigned
