@@ -124,8 +124,13 @@ struct MindPalaceView: View {
         var newNodes: [String: ForceNode] = [:]
         var newEdges: [ForceEdge] = []
         
+        #if os(macOS)
         let cx = NSScreen.main?.frame.width ?? 800
         let cy = NSScreen.main?.frame.height ?? 600
+        #else
+        let cx = UIScreen.main.bounds.width
+        let cy = UIScreen.main.bounds.height
+        #endif
         
         for triple in triples {
             let sId = triple.subject.lowercased()

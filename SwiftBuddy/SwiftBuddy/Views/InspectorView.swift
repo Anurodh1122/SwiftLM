@@ -49,7 +49,7 @@ struct InspectorView: View {
                         
                     }
                     .padding()
-                    .background(Color(nsColor: .controlBackgroundColor))
+                    .background(SwiftBuddyTheme.surface)
                     .cornerRadius(8)
                 } header: {
                     Text("NETWORKING").font(.caption).foregroundColor(.secondary)
@@ -87,7 +87,7 @@ struct InspectorView: View {
                         }
                     }
                     .padding()
-                    .background(Color(nsColor: .controlBackgroundColor))
+                    .background(SwiftBuddyTheme.surface)
                     .cornerRadius(8)
                 } header: {
                     Text("INFERENCE").font(.caption).foregroundColor(.secondary)
@@ -115,7 +115,7 @@ struct InspectorView: View {
                             .padding(.top, 4)
                     }
                     .padding()
-                    .background(Color(nsColor: .controlBackgroundColor))
+                    .background(SwiftBuddyTheme.surface)
                     .cornerRadius(8)
                 } header: {
                     Text("TOOLS").font(.caption).foregroundColor(.secondary)
@@ -167,7 +167,7 @@ struct InspectorView: View {
                         }
                     }
                     .padding()
-                    .background(Color(nsColor: .controlBackgroundColor))
+                    .background(SwiftBuddyTheme.surface)
                     .cornerRadius(8)
                     .fixedSize(horizontal: false, vertical: true)
                 } header: {
