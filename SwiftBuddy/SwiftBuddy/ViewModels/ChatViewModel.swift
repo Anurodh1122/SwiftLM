@@ -114,7 +114,7 @@ final class ChatViewModel: ObservableObject {
                         let now = Date()
                         if now.timeIntervalSince(lastPublish) >= 0.08 {
                             lastPublish = now
-                            streamingText = liveText
+                            streamingText = Self.hidingToolCall(liveText)
                             thinkingText = liveThinking
                         }
                     }
@@ -175,7 +175,7 @@ final class ChatViewModel: ObservableObject {
                 print("[Chat] round \(depth) reply: \(response.count) chars (visible \(liveText.count), thinking \((liveThinking ?? thinking).count))")
                 // Publish the last tokens the throttle held back; `thinkingText` is also
                 // what the committed message records below.
-                streamingText = liveText
+                streamingText = Self.hidingToolCall(liveText)
                 thinkingText = liveThinking
 
                 // First, check if there's a tool call in the complete response
@@ -257,6 +257,57 @@ final class ChatViewModel: ObservableObject {
         }
 
         await generationTask?.value
+    }
+
+    /// The part of a streamed reply to show. A tool call is for the app to run, not for
+    /// the reader, so everything from `<tool_call>` on is held back, including a tag that
+    /// is still arriving.
+    static func hidingToolCall(_ text: String) -> String {
+        let tag = "<tool_call>"
+        if let range = text.range(of: tag) {
+            return String(text[..<range.lowerBound])
+        }
+        if let open = text.lastIndex(of: "<"), tag.hasPrefix(String(text[open...])) {
+            return String(text[..<open])
+        }
+        return text
+    }
+
+    // MARK: — Edit & resend
+
+    /// Removes `message` and everything after it from the open chat, saved turns included.
+    private func truncate(from message: ChatMessage) {
+        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
+        let removed = Set(messages[index...].map(\.id))
+        messages.removeSubrange(index...)
+        if let context = modelContext, let session = activeSession {
+            for turn in session.turns where removed.contains(turn.id) {
+                context.delete(turn)
+            }
+            try? context.save()
+        }
+    }
+
+    /// Takes a sent message back out of the chat, with the replies after it, so it can be
+    /// edited and sent again. Returns its text for the input field.
+    func editMessage(_ message: ChatMessage) -> String {
+        stopGeneration()
+        truncate(from: message)
+        return message.content
+    }
+
+    /// Sends a message again from that point, dropping the replies that followed it.
+    func resend(_ message: ChatMessage) async {
+        stopGeneration()
+        truncate(from: message)
+        await send(message.content)
+    }
+
+    /// Asks again for a reply: resends the user message this reply answered.
+    func regenerate(_ reply: ChatMessage) async {
+        guard let index = messages.firstIndex(where: { $0.id == reply.id }),
+              let prompt = messages[..<index].last(where: { $0.role == .user }) else { return }
+        await resend(prompt)
     }
 
     // MARK: — Controls
@@ -454,8 +505,12 @@ final class ChatViewModel: ObservableObject {
             }
         }
         
+        // Memory tools only for personas: their memories live in a wing. In the plain chat
+        // small models called them for any question ("what can you do") and then asked the
+        // user to set up the palace instead of answering.
+        guard currentWing != nil else { return systemPrompt }
         let toolInjection = MemoryPalaceTools.schemaManifestString
-        
+
         return wakeUpText + systemPrompt + activeRagDirective + "\n\n" + toolInjection
     }
 }

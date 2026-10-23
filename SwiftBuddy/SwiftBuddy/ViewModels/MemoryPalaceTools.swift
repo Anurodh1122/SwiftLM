@@ -164,10 +164,12 @@ public struct MemoryPalaceTools {
         MEMORY PALACE NAVIGATION:
         You are equipped with a Memory Palace acting as your long-term memory file-system. 
         Your Core Identity (L0) and Critical Facts (L1) are already loaded in your prompt. However, YOU DO NOT PASSIVELY REMEMBER EVERYTHING ELSE. 
-        If a user asks about your past, projects, or prior events, you MUST actively navigate your memory using these layers:
-        - L2 (Room Recall): Use `mempalace_fetch_room` IMMEDIATELY when a known project, recent session, or specific topic arises in the conversation.
+        If a user asks about your past, projects, or prior events, navigate your memory using these layers:
+        - L2 (Room Recall): Use `mempalace_get_closet` when a known project, recent session, or specific topic arises in the conversation.
         - L3 (Deep Search): Use `mempalace_search` as a fallback semantic scan across all closets when a specific room is unknown but deep global retrieval is required.
         Example: "Let me consult my journals..." followed by the <tool_call>.
+
+        Only call a tool when the user asks you to remember, recall or look up something. Answer greetings, general questions and questions about what you can do directly, without a tool. If a tool finds nothing, say so briefly and answer anyway; never ask the user to set up wings or rooms.
         
         FORMAT:
         <tool_call>

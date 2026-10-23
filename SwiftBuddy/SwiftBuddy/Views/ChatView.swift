@@ -102,7 +102,9 @@ struct ChatView: View {
                         .padding(.top, 60)
                 } else {
                     LazyVStack(alignment: .leading, spacing: 14) {
-                        ForEach(viewModel.messages) { message in
+                        // Tool results are for the model; showing them put raw memory
+                        // lookups ("The Palace is empty") in the chat.
+                        ForEach(viewModel.messages.filter { $0.role == .user || $0.role == .assistant }) { message in
                             MessageBubble(
                                 message: message,
                                 isRPGMode: viewModel.currentWing != nil,
@@ -110,6 +112,7 @@ struct ChatView: View {
                             )
                             .id(message.id)
                             .environmentObject(engine)
+                            .contextMenu { messageActions(for: message) }
                         }
                         if !viewModel.streamingText.isEmpty || viewModel.thinkingText != nil {
                             StreamingBubble(
@@ -471,6 +474,43 @@ struct ChatView: View {
         guard !text.isEmpty, !viewModel.isGenerating else { return }
         inputText = ""
         Task { await viewModel.send(text) }
+    }
+
+    /// Long-press menu on a message: copy it, edit and resend your own messages, or get
+    /// a new reply. Editing and resending drop everything after that message.
+    @ViewBuilder
+    private func messageActions(for message: ChatMessage) -> some View {
+        Button {
+            #if os(iOS)
+            UIPasteboard.general.string = message.content
+            #else
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(message.content, forType: .string)
+            #endif
+        } label: {
+            Label("Copy", systemImage: "doc.on.doc")
+        }
+        if message.role == .user {
+            Button {
+                inputText = viewModel.editMessage(message)
+                inputFocused = true
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+            Button {
+                Task { await viewModel.resend(message) }
+            } label: {
+                Label("Resend", systemImage: "arrow.clockwise")
+            }
+            .disabled(!engine.state.canSend)
+        } else {
+            Button {
+                Task { await viewModel.regenerate(message) }
+            } label: {
+                Label("Regenerate", systemImage: "arrow.clockwise")
+            }
+            .disabled(!engine.state.canSend)
+        }
     }
 
     // MARK: — Toolbars
