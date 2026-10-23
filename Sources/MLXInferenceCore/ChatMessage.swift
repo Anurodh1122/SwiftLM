@@ -12,6 +12,24 @@ public struct ChatMessage: Identifiable, Codable, Equatable, Sendable {
     public let timestamp: Date
     /// How a reply was generated, shown under it. Only set on replies from this session.
     public var stats: GenerationStats?
+    /// The tools an assistant message called (OpenAI `tool_calls`), for API clients
+    /// that send their history back.
+    public var toolCalls: [ToolCallRecord]?
+    /// On a tool result: the call it answers (OpenAI `tool_call_id`).
+    public var toolCallID: String?
+
+    /// One tool call, with its arguments as a JSON object string, as OpenAI sends it.
+    public struct ToolCallRecord: Codable, Equatable, Sendable {
+        public var id: String
+        public var name: String
+        public var arguments: String
+
+        public init(id: String, name: String, arguments: String) {
+            self.id = id
+            self.name = name
+            self.arguments = arguments
+        }
+    }
 
     public struct GenerationStats: Codable, Equatable, Sendable {
         public var tokens: Int

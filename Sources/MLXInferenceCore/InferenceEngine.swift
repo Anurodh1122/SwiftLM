@@ -110,11 +110,16 @@ public struct GenerationToken: Sendable {
     /// Set only on the empty token that ends a generation: prompt and generated token
     /// counts, for the API server's `usage` field.
     public let usage: (prompt: Int, completion: Int)?
+    /// Set when the model called a tool. `text` then holds the same call as a
+    /// `<tool_call>` block, which the app's own tool loop reads.
+    public let toolCall: ChatMessage.ToolCallRecord?
 
-    public init(text: String, isThinking: Bool = false, usage: (prompt: Int, completion: Int)? = nil) {
+    public init(text: String, isThinking: Bool = false, usage: (prompt: Int, completion: Int)? = nil,
+                toolCall: ChatMessage.ToolCallRecord? = nil) {
         self.text = text
         self.isThinking = isThinking
         self.usage = usage
+        self.toolCall = toolCall
     }
 }
 
@@ -766,6 +771,45 @@ public final class InferenceEngine: ObservableObject {
         return "<tool_call>\n\(json)\n</tool_call>"
     }
 
+    /// A parsed tool call as an OpenAI-style record: arguments as a JSON object string.
+    fileprivate static func toolCallRecord(_ call: MLXLMCommon.ToolCall) -> ChatMessage.ToolCallRecord {
+        let arguments = (try? JSONEncoder().encode(call.function.arguments))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+        let id = call.id ?? "call_\(UUID().uuidString.prefix(8).lowercased())"
+        return .init(id: id, name: call.function.name, arguments: arguments)
+    }
+
+    /// An OpenAI `tool_calls` entry as chat templates read it: Qwen's iterates the
+    /// arguments as a mapping, so they go in as an object rather than a string.
+    fileprivate static func templateToolCall(_ record: ChatMessage.ToolCallRecord) -> [String: any Sendable] {
+        let parsed = record.arguments.data(using: .utf8)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) }
+        let arguments: any Sendable = parsed.map(templateValue) ?? [String: any Sendable]()
+        return [
+            "id": record.id,
+            "type": "function",
+            "function": ["name": record.name, "arguments": arguments] as [String: any Sendable],
+        ]
+    }
+
+    /// A JSONSerialization value as a Sendable one for a chat template.
+    public nonisolated static func templateValue(_ value: Any) -> any Sendable {
+        switch value {
+        case let number as NSNumber:
+            if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue }
+            let type = String(cString: number.objCType)
+            return (type == "d" || type == "f") ? number.doubleValue : number.intValue
+        case let string as String:
+            return string
+        case let array as [Any]:
+            return array.map(templateValue)
+        case let object as [String: Any]:
+            return object.mapValues(templateValue)
+        default:
+            return ""
+        }
+    }
+
     private func releaseLoadedModelResources() {
         if isGenerationActive { stopRequested = true }
         loadToken &+= 1
@@ -870,7 +914,8 @@ extension InferenceEngine {
     public nonisolated func generate(
         messages: [ChatMessage],
         config: GenerationConfig = .default,
-        origin: GenerationOrigin = .app
+        origin: GenerationOrigin = .app,
+        tools: [[String: any Sendable]]? = nil
     ) -> AsyncStream<GenerationToken> {
         AsyncStream { continuation in
             let task: Task<Void, Never> = Task { @MainActor in
@@ -901,7 +946,7 @@ extension InferenceEngine {
                 self.state = .generating
 
                 do {
-                    var finalMessages: [[String: String]] = []
+                    var finalMessages: [[String: any Sendable]] = []
                     var pendingSystemContext = ""
                     
                     for msg in messages {
@@ -927,7 +972,12 @@ extension InferenceEngine {
                                 content = "[SYSTEM CONTEXT / PERSONA DATA]\n" + pendingSystemContext + "\n[END CONTEXT]\n\n" + content
                                 pendingSystemContext = "" // Clear after injecting
                             }
-                            finalMessages.append(["role": roleRaw, "content": content])
+                            var entry: [String: any Sendable] = ["role": roleRaw, "content": content]
+                            if let calls = msg.toolCalls, !calls.isEmpty {
+                                entry["tool_calls"] = calls.map(Self.templateToolCall)
+                            }
+                            if let id = msg.toolCallID { entry["tool_call_id"] = id }
+                            finalMessages.append(entry)
                         }
                     }
                     
@@ -969,7 +1019,7 @@ extension InferenceEngine {
                     print("[InferenceEngine] generate (\(origin)): \(messages.count) messages, prefill chunk \(params.prefillStepSize.map { "\($0)" } ?? "default")")
                     var promptMessages = mlxMessages
                     var lmInput = try await container.prepare(
-                        input: UserInput(messages: promptMessages, additionalContext: additionalContext))
+                        input: UserInput(messages: promptMessages, tools: tools, additionalContext: additionalContext))
 
                     // Context limit (Settings): drop the oldest exchanges until the prompt
                     // fits. The first message is kept, since it carries the system context
@@ -982,7 +1032,7 @@ extension InferenceEngine {
                             promptMessages.removeSubrange(1 ... 2)
                             dropped += 2
                             lmInput = try await container.prepare(
-                                input: UserInput(messages: promptMessages, additionalContext: additionalContext))
+                                input: UserInput(messages: promptMessages, tools: tools, additionalContext: additionalContext))
                         }
                         if dropped > 0 {
                             print("[InferenceEngine] context limit \(contextLimit): dropped \(dropped) oldest messages")
@@ -1046,6 +1096,8 @@ extension InferenceEngine {
                     }
 
                     var mtpAcceptanceRate: Double? = nil
+                    // The library's own count: a tool call's tokens arrive as one event.
+                    var reportedTokenCount = 0
 
                     for await generation in stream {
                         guard !Task.isCancelled, !self.stopRequested else { break }
@@ -1107,7 +1159,7 @@ extension InferenceEngine {
                             if firstTokenDate == nil { firstTokenDate = Date() }
                             outputText += text
                             tokenCount += 1
-                            continuation.yield(GenerationToken(text: text))
+                            continuation.yield(GenerationToken(text: text, toolCall: Self.toolCallRecord(call)))
                         } else if case .rejectedToolCall(let rejected) = generation {
                             // Tool-call-shaped output the library could not parse: pass on
                             // what the model wrote rather than dropping it.
@@ -1118,6 +1170,7 @@ extension InferenceEngine {
                                 continuation.yield(GenerationToken(text: rejected.rawTextPreview))
                             }
                         } else if case .info(let info) = generation {
+                            reportedTokenCount = info.generationTokenCount
                             // `proposedDraftTokens`/`acceptedDraftTokens` are `Int?` as of
                             // mlx-swift-lm 348ff97 (nil for non-MTP iterators, renamed from
                             // the previously non-optional `totalDraftTokens`/`acceptedDraftTokens`).
@@ -1148,7 +1201,7 @@ extension InferenceEngine {
                         decodeToksPerSec: decodeTps,
                         draftAcceptanceRate: mtpAcceptanceRate
                     )
-                    continuation.yield(GenerationToken(text: "", usage: (baseTokens, tokenCount)))
+                    continuation.yield(GenerationToken(text: "", usage: (baseTokens, max(tokenCount, reportedTokenCount))))
                 } catch let ssdError as SSDStreamingError {
                     // Corrupted/truncated safetensors — surface a clear, actionable error
                     let msg = "Model weights are corrupted or incomplete. Please re-download the model."

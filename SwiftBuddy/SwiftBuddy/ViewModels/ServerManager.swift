@@ -196,13 +196,44 @@ final class ServerManager: ObservableObject {
                             }
                             switch role {
                             case "system", "developer": chatMessages.append(.system(content))
-                            case "assistant":           chatMessages.append(.assistant(content))
-                            case "tool":                chatMessages.append(.tool(content))
+                            case "assistant":
+                                // The calls it made, so the model sees them next to their results.
+                                var message = ChatMessage.assistant(content)
+                                let calls = (m["tool_calls"] as? [[String: Any]] ?? []).compactMap { call -> ChatMessage.ToolCallRecord? in
+                                    guard let function = call["function"] as? [String: Any],
+                                          let name = function["name"] as? String else { return nil }
+                                    let arguments: String
+                                    if let text = function["arguments"] as? String {
+                                        arguments = text
+                                    } else if let object = function["arguments"],
+                                              JSONSerialization.isValidJSONObject(object),
+                                              let data = try? JSONSerialization.data(withJSONObject: object) {
+                                        arguments = String(decoding: data, as: UTF8.self)
+                                    } else {
+                                        arguments = "{}"
+                                    }
+                                    let id = call["id"] as? String ?? "call_\(UUID().uuidString.prefix(8).lowercased())"
+                                    return .init(id: id, name: name, arguments: arguments)
+                                }
+                                if !calls.isEmpty { message.toolCalls = calls }
+                                chatMessages.append(message)
+                            case "tool":
+                                var message = ChatMessage.tool(content)
+                                message.toolCallID = m["tool_call_id"] as? String
+                                chatMessages.append(message)
                             case "user":                chatMessages.append(.user(content))
                             default:                    chatMessages.append(.user(content))
                             }
                         }
                     }
+
+                    // OpenAI `tools`: rendered by the chat template, which tells the model
+                    // how to call them. They used to be dropped, and the model answered
+                    // without them (inventing a weather report, for one).
+                    var tools: [[String: any Sendable]]? = (json["tools"] as? [[String: Any]])?
+                        .compactMap { InferenceEngine.templateValue($0) as? [String: any Sendable] }
+                    if tools?.isEmpty == true || json["tool_choice"] as? String == "none" { tools = nil }
+                    let requestTools = tools
 
                     // 3. Build request config from persisted user defaults + per-request overrides
                     var reqConfig = GenerationConfig.load()
@@ -251,6 +282,12 @@ final class ServerManager: ObservableObject {
                         "\"usage\":{\"prompt_tokens\":\(usage.prompt),\"completion_tokens\":\(usage.completion),\"total_tokens\":\(usage.prompt + usage.completion)}"
                     }
 
+                    // One OpenAI `tool_calls` entry; streamed entries also carry their index.
+                    func toolCallJSON(_ call: ChatMessage.ToolCallRecord, index: Int? = nil) -> String {
+                        let indexField = index.map { "\"index\":\($0)," } ?? ""
+                        return "{\(indexField)\"id\":\"\(jsonEscape(call.id))\",\"type\":\"function\",\"function\":{\"name\":\"\(jsonEscape(call.name))\",\"arguments\":\"\(jsonEscape(call.arguments))\"}}"
+                    }
+
                     if streamRequested {
                         // ── SSE streaming ───────────────────────────────────
                         var sseHeaders = HTTPFields()
@@ -260,12 +297,20 @@ final class ServerManager: ObservableObject {
 
                         let sseStream = AsyncStream<ByteBuffer> { cont in
                             let producer = Task {
-                                for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api) {
+                                var toolCallCount = 0
+                                for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api, tools: requestTools) {
                                     // The closing token carries the counts. Send them as the
                                     // final chunk with `finish_reason`, as OpenAI does.
                                     if let usage = token.usage {
-                                        let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"\(finishReason(usage))\"}],\(usageJSON(usage))}"
+                                        let reason = toolCallCount > 0 ? "tool_calls" : finishReason(usage)
+                                        let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"\(reason)\"}],\(usageJSON(usage))}"
                                         cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
+                                        continue
+                                    }
+                                    if let call = token.toolCall {
+                                        let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[\(toolCallJSON(call, index: toolCallCount))]},\"finish_reason\":null}]}"
+                                        cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
+                                        toolCallCount += 1
                                         continue
                                     }
                                     // Thinking goes in `reasoning_content`, as other OpenAI-style
@@ -289,15 +334,21 @@ final class ServerManager: ObservableObject {
                         var fullText = ""
                         var reasoning = ""
                         var usage = (prompt: 0, completion: 0)
-                        for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api) {
+                        var toolCalls: [ChatMessage.ToolCallRecord] = []
+                        for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api, tools: requestTools) {
                             if let counts = token.usage { usage = counts; continue }
+                            if let call = token.toolCall { toolCalls.append(call); continue }
                             if token.isThinking { reasoning += token.text } else { fullText += token.text }
                         }
                         // The answer follows the thought after a blank line.
                         fullText = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
                         reasoning = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
                         let reasoningField = reasoning.isEmpty ? "" : ",\"reasoning_content\":\"\(jsonEscape(reasoning))\""
-                        let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"\(jsonEscape(fullText))\"\(reasoningField)},\"finish_reason\":\"\(finishReason(usage))\"}],\(usageJSON(usage))}"
+                        // A reply that only calls tools has no text: OpenAI sends null content.
+                        let contentField = toolCalls.isEmpty || !fullText.isEmpty ? "\"\(jsonEscape(fullText))\"" : "null"
+                        let toolCallsField = toolCalls.isEmpty ? "" : ",\"tool_calls\":[\(toolCalls.map { toolCallJSON($0) }.joined(separator: ","))]"
+                        let reason = toolCalls.isEmpty ? finishReason(usage) : "tool_calls"
+                        let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\(contentField)\(reasoningField)\(toolCallsField)},\"finish_reason\":\"\(reason)\"}],\(usageJSON(usage))}"
                         return Response(status: .ok, headers: swiftBuddyJSONHeaders,
                                         body: .init(byteBuffer: ByteBuffer(string: body)))
                     }
