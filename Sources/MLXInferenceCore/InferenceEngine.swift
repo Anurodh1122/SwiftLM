@@ -709,6 +709,16 @@ public final class InferenceEngine: ObservableObject {
         state = .idle
     }
 
+    /// UserDefaults key for the context limit in tokens; 0 or unset means no limit.
+    /// Kept out of `GenerationConfig`: a new field there would make previously saved
+    /// configs fail to decode and silently reset every setting to its default.
+    public static let contextLimitKey = "swiftlm.contextLimit"
+
+    /// Longest prompt, in tokens, before the oldest messages are dropped (0 = no limit).
+    fileprivate static var contextLimit: Int {
+        max(0, UserDefaults.standard.integer(forKey: contextLimitKey))
+    }
+
     /// A parsed tool call as the `<tool_call>` text block the model wrote, in the
     /// `{"name": …, "parameters": …}` shape the tool instructions ask for.
     fileprivate static func toolCallText(_ call: MLXLMCommon.ToolCall) -> String {
@@ -928,12 +938,28 @@ extension InferenceEngine {
                     let additionalContext: [String: any Sendable]? = config.enableThinking
                         ? ["enable_thinking": true]
                         : ["enable_thinking": false]
-                    let userInput = UserInput(
-                        messages: mlxMessages,
-                        additionalContext: additionalContext
-                    )
                     print("[InferenceEngine] generate (\(origin)): \(messages.count) messages, prefill chunk \(params.prefillStepSize.map { "\($0)" } ?? "default")")
-                    let lmInput = try await container.prepare(input: userInput)
+                    var promptMessages = mlxMessages
+                    var lmInput = try await container.prepare(
+                        input: UserInput(messages: promptMessages, additionalContext: additionalContext))
+
+                    // Context limit (Settings): drop the oldest exchanges until the prompt
+                    // fits. The first message is kept, since it carries the system context
+                    // and persona, and turns go in pairs so user/assistant still alternate
+                    // (strict templates such as Gemma's reject anything else).
+                    let contextLimit = Self.contextLimit
+                    if contextLimit > 0 {
+                        var dropped = 0
+                        while lmInput.text.tokens.size > contextLimit, promptMessages.count >= 4 {
+                            promptMessages.removeSubrange(1 ... 2)
+                            dropped += 2
+                            lmInput = try await container.prepare(
+                                input: UserInput(messages: promptMessages, additionalContext: additionalContext))
+                        }
+                        if dropped > 0 {
+                            print("[InferenceEngine] context limit \(contextLimit): dropped \(dropped) oldest messages")
+                        }
+                    }
 
                     // Use the real token count from the prepared LMInput rather than
                     // a character-length heuristic (which was consistently off by 2–3×

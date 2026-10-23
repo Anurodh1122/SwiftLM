@@ -30,6 +30,7 @@ struct SettingsView: View {
 
     // iOS-specific: performance mode toggle (read from UserDefaults)
     @AppStorage("swiftlm.performanceMode") private var performanceMode: Bool = false
+    @AppStorage(InferenceEngine.contextLimitKey) private var contextLimit: Int = 0
 
     private var ramGB: Double {
         Double(ProcessInfo.processInfo.physicalMemory) / (1024 * 1024 * 1024)
@@ -612,6 +613,10 @@ struct SettingsView: View {
                         tint: SwiftBuddyTheme.accentSecondary,
                         hint: "Lower values prevent GPU timeout on large models"
                     )
+                }
+
+                parameterCard("Context") {
+                    contextLimitRow
                 }
 
                 parameterCard("Advanced Engine") {
@@ -1202,6 +1207,31 @@ struct SettingsView: View {
                     .foregroundStyle(SwiftBuddyTheme.textSecondary)
                     .font(.callout.monospacedDigit())
             }
+        }
+    }
+
+    /// Choices for the context limit, in tokens; 0 is no limit.
+    private static let contextLimitChoices = [0, 4096, 8192, 16384, 32768, 65536]
+
+    private var contextLimitRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label("Context Limit", systemImage: "text.alignleft")
+                    .font(.callout)
+                    .foregroundStyle(SwiftBuddyTheme.textPrimary)
+                Spacer()
+                Picker("Context Limit", selection: $contextLimit) {
+                    ForEach(Self.contextLimitChoices, id: \.self) { tokens in
+                        Text(tokens == 0 ? "No limit" : "\(tokens / 1024)K tokens").tag(tokens)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(SwiftBuddyTheme.accent)
+            }
+            Text("Once a chat's prompt is longer than this, the oldest messages are left out. Keeps long chats fast and their memory use bounded; the model's own maximum is \(engine.maxContextWindow > 0 ? "\(engine.maxContextWindow) tokens" : "shown once a model is loaded"). The chat's persona and tool instructions alone take about 2K tokens.")
+                .font(.caption2)
+                .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

@@ -180,8 +180,9 @@ struct MindPalaceView: View {
         let margin: CGFloat = 80 // labels sit below and extend beyond the dots
         let width = maxX - minX + 2 * margin
         let height = maxY - minY + 2 * margin
-        // Never enlarge past 1.2x, and below 0.3x labels become unreadable anyway.
-        let scale = max(0.3, min(1.2, size.width / width, size.height / height))
+        // Never enlarge past 1.2x. The lower bound is only a guard: clamping at 0.3x let a
+        // wide graph overflow, which left the visible part stuck in a corner.
+        let scale = max(0.1, min(1.2, size.width / width, size.height / height))
         let graphCenter = CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
         return GraphFit(
             scale: scale,
@@ -205,7 +206,10 @@ struct MindPalaceView: View {
         let k: CGFloat = 0.5 // Spring constant
         let repulsion: CGFloat = 12000 // Increased Node repulsion to spread text
         let damping: CGFloat = 0.85
-        let centerGravity: CGFloat = 0.005 // Reduced pull to center to allow spread
+        // Pull to the centre. At 0.005, with repulsion reaching across the whole graph,
+        // groups not linked to each other pushed apart forever and drifted off-screen.
+        let centerGravity: CGFloat = 0.01
+        let repulsionRange: CGFloat = 600 // Nodes farther apart than this don't push
         let maxSpeed: CGFloat = 40 // Keeps near-overlapping nodes from flinging off-screen
 
         // 1. Calculate Repulsion (Coulomb)
@@ -215,6 +219,7 @@ struct MindPalaceView: View {
                 let dx = n1.position.x - n2.position.x
                 let dy = n1.position.y - n2.position.y
                 let dist = max(hypot(dx, dy), 1) // Prevent div 0
+                guard dist < repulsionRange else { continue }
 
                 let force = repulsion / (dist * dist)
                 let fx = (dx / dist) * force
