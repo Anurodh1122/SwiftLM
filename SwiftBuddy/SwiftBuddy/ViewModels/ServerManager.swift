@@ -226,6 +226,12 @@ final class ServerManager: ObservableObject {
                             }
                         }
                     }
+                    // A request without messages used to get an empty 200 reply.
+                    if chatMessages.isEmpty {
+                        let err = #"{"error":{"message":"'messages' must be a non-empty array","type":"invalid_request_error"}}"#
+                        return Response(status: .badRequest, headers: swiftBuddyJSONHeaders,
+                                        body: .init(byteBuffer: ByteBuffer(string: err)))
+                    }
 
                     // OpenAI `tools`: rendered by the chat template, which tells the model
                     // how to call them. They used to be dropped, and the model answered
@@ -256,10 +262,11 @@ final class ServerManager: ObservableObject {
                     if let kwargs = json["chat_template_kwargs"] as? [String: Any],
                        let think = kwargs["enable_thinking"] as? Bool { reqConfig.enableThinking = think }
                     else if let think = json["enable_thinking"] as? Bool { reqConfig.enableThinking = think }
-                    let maxTokens = reqConfig.maxTokens
-                    func finishReason(_ usage: (prompt: Int, completion: Int)) -> String {
-                        usage.completion >= maxTokens ? "length" : "stop"
-                    }
+                    // `stop`: a string or up to four strings; they used to be ignored.
+                    let stops = ((json["stop"] as? [String]) ?? (json["stop"] as? String).map { [$0] } ?? [])
+                        .filter { !$0.isEmpty }.prefix(4)
+                    let replyFilter = APIReplyFilter(toolSchemas: toolNames, stops: Array(stops),
+                                                     maxTokens: reqConfig.maxTokens)
 
                     // No model: say so instead of answering 200 with an empty reply. A
                     // request that arrives mid-generation still waits its turn.
@@ -307,57 +314,39 @@ final class ServerManager: ObservableObject {
 
                         let sseStream = AsyncStream<ByteBuffer> { cont in
                             let producer = Task {
-                                var toolCallCount = 0
-                                // Text from a `<tool_call>` the library did not take as a call:
-                                // held back, then sent as calls if it parses, else as text.
-                                var heldCall = ""
-                                func contentChunk(_ text: String) -> ByteBuffer {
-                                    ByteBuffer(string: "data: {\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\(jsonEscape(text))\"},\"finish_reason\":null}]}\n\n")
+                                var filter = replyFilter
+                                var toolIndex = 0
+                                func chunk(_ delta: String, finish: String = "null", usage: String = "") -> ByteBuffer {
+                                    ByteBuffer(string: "data: {\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":\(delta),\"finish_reason\":\(finish)}]\(usage)}\n\n")
                                 }
-                                func toolCallChunk(_ call: ChatMessage.ToolCallRecord) -> ByteBuffer {
-                                    defer { toolCallCount += 1 }
-                                    return ByteBuffer(string: "data: {\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[\(toolCallJSON(call, index: toolCallCount))]},\"finish_reason\":null}]}\n\n")
+                                func send(_ events: [APIReplyFilter.Event]) {
+                                    for event in events {
+                                        switch event {
+                                        case .content(let text):
+                                            cont.yield(chunk("{\"content\":\"\(jsonEscape(text))\"}"))
+                                        // Thinking goes in `reasoning_content`, as other OpenAI-style
+                                        // servers send it; it used to be mixed into the answer.
+                                        case .reasoning(let text):
+                                            cont.yield(chunk("{\"reasoning_content\":\"\(jsonEscape(text))\"}"))
+                                        case .toolCall(let call):
+                                            cont.yield(chunk("{\"tool_calls\":[\(toolCallJSON(call, index: toolIndex))]}"))
+                                            toolIndex += 1
+                                        // The counts go in the final chunk with `finish_reason`, as OpenAI does.
+                                        case .finish(let reason, let usage):
+                                            cont.yield(chunk("{}", finish: "\"\(reason)\"", usage: "," + usageJSON(usage)))
+                                        }
+                                    }
                                 }
+                                var stopSent = false
                                 for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api, tools: requestTools) {
-                                    if !toolNames.isEmpty, !token.isThinking, token.toolCall == nil, token.usage == nil {
-                                        if heldCall.isEmpty, let start = token.text.range(of: "<tool_call>") {
-                                            let before = String(token.text[..<start.lowerBound])
-                                            if !before.isEmpty { cont.yield(contentChunk(before)) }
-                                            heldCall = String(token.text[start.lowerBound...])
-                                            continue
-                                        } else if !heldCall.isEmpty {
-                                            heldCall += token.text
-                                            continue
-                                        }
+                                    send(filter.feed(token))
+                                    if filter.stopped, !stopSent {
+                                        stopSent = true
+                                        await engine.stopGeneration()
                                     }
-                                    // The closing token carries the counts. Send them as the
-                                    // final chunk with `finish_reason`, as OpenAI does.
-                                    if let usage = token.usage {
-                                        if !heldCall.isEmpty {
-                                            if let recovered = ServerManager.recoverToolCalls(from: heldCall, toolNames: toolNames) {
-                                                for call in recovered.calls { cont.yield(toolCallChunk(call)) }
-                                            } else {
-                                                cont.yield(contentChunk(heldCall))
-                                            }
-                                            heldCall = ""
-                                        }
-                                        let reason = toolCallCount > 0 ? "tool_calls" : finishReason(usage)
-                                        let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"\(reason)\"}],\(usageJSON(usage))}"
-                                        cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
-                                        continue
-                                    }
-                                    if let call = token.toolCall {
-                                        cont.yield(toolCallChunk(call))
-                                        continue
-                                    }
-                                    // Thinking goes in `reasoning_content`, as other OpenAI-style
-                                    // servers send it; it used to be mixed into the answer.
-                                    let field = token.isThinking ? "reasoning_content" : "content"
-                                    let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"\(field)\":\"\(jsonEscape(token.text))\"},\"finish_reason\":null}]}"
-                                    cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
                                 }
                                 // A failed generation ends without the closing token.
-                                if !heldCall.isEmpty { cont.yield(contentChunk(heldCall)) }
+                                send(filter.finish(nil))
                                 cont.yield(ByteBuffer(string: "data: [DONE]\n\n"))
                                 cont.finish()
                             }
@@ -370,31 +359,63 @@ final class ServerManager: ObservableObject {
 
                     } else {
                         // ── Non-streaming: collect full response ────────────
-                        var fullText = ""
-                        var reasoning = ""
-                        var usage = (prompt: 0, completion: 0)
-                        var toolCalls: [ChatMessage.ToolCallRecord] = []
-                        for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api, tools: requestTools) {
-                            if let counts = token.usage { usage = counts; continue }
-                            if let call = token.toolCall { toolCalls.append(call); continue }
-                            if token.isThinking { reasoning += token.text } else { fullText += token.text }
+                        // Sent as a body that writes a space every 2 s while the model works.
+                        // Whitespace before JSON is valid, and the write is how a client that
+                        // gave up is noticed: it fails, the body ends and generation is
+                        // cancelled. Before, an abandoned request ran to its end and the
+                        // next one waited behind it.
+                        let body = AsyncStream<ByteBuffer> { cont in
+                            let heartbeat = Task {
+                                while !Task.isCancelled {
+                                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                                    if Task.isCancelled { break }
+                                    cont.yield(ByteBuffer(string: " "))
+                                }
+                            }
+                            let producer = Task {
+                                var filter = replyFilter
+                                var fullText = ""
+                                var reasoning = ""
+                                var usage = (prompt: 0, completion: 0)
+                                var reason = "stop"
+                                var toolCalls: [ChatMessage.ToolCallRecord] = []
+                                func take(_ events: [APIReplyFilter.Event]) {
+                                    for event in events {
+                                        switch event {
+                                        case .content(let text): fullText += text
+                                        case .reasoning(let text): reasoning += text
+                                        case .toolCall(let call): toolCalls.append(call)
+                                        case .finish(let r, let u): reason = r; usage = u
+                                        }
+                                    }
+                                }
+                                var stopSent = false
+                                for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api, tools: requestTools) {
+                                    take(filter.feed(token))
+                                    if filter.stopped, !stopSent {
+                                        stopSent = true
+                                        await engine.stopGeneration()
+                                    }
+                                }
+                                take(filter.finish(nil))
+                                heartbeat.cancel()
+                                // The answer follows the thought after a blank line.
+                                fullText = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                reasoning = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
+                                let reasoningField = reasoning.isEmpty ? "" : ",\"reasoning_content\":\"\(jsonEscape(reasoning))\""
+                                // A reply that only calls tools has no text: OpenAI sends null content.
+                                let contentField = toolCalls.isEmpty || !fullText.isEmpty ? "\"\(jsonEscape(fullText))\"" : "null"
+                                let toolCallsField = toolCalls.isEmpty ? "" : ",\"tool_calls\":[\(toolCalls.map { toolCallJSON($0) }.joined(separator: ","))]"
+                                cont.yield(ByteBuffer(string: "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\(contentField)\(reasoningField)\(toolCallsField)},\"finish_reason\":\"\(reason)\"}],\(usageJSON(usage))}"))
+                                cont.finish()
+                            }
+                            cont.onTermination = { _ in
+                                heartbeat.cancel()
+                                producer.cancel()
+                            }
                         }
-                        if toolCalls.isEmpty, !toolNames.isEmpty,
-                           let recovered = ServerManager.recoverToolCalls(from: fullText, toolNames: toolNames) {
-                            toolCalls = recovered.calls
-                            fullText = recovered.text
-                        }
-                        // The answer follows the thought after a blank line.
-                        fullText = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        reasoning = reasoning.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let reasoningField = reasoning.isEmpty ? "" : ",\"reasoning_content\":\"\(jsonEscape(reasoning))\""
-                        // A reply that only calls tools has no text: OpenAI sends null content.
-                        let contentField = toolCalls.isEmpty || !fullText.isEmpty ? "\"\(jsonEscape(fullText))\"" : "null"
-                        let toolCallsField = toolCalls.isEmpty ? "" : ",\"tool_calls\":[\(toolCalls.map { toolCallJSON($0) }.joined(separator: ","))]"
-                        let reason = toolCalls.isEmpty ? finishReason(usage) : "tool_calls"
-                        let body = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\(contentField)\(reasoningField)\(toolCallsField)},\"finish_reason\":\"\(reason)\"}],\(usageJSON(usage))}"
                         return Response(status: .ok, headers: swiftBuddyJSONHeaders,
-                                        body: .init(byteBuffer: ByteBuffer(string: body)))
+                                        body: .init(asyncSequence: body))
                     }
                 }
                 

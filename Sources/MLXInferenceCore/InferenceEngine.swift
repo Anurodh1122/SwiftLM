@@ -981,6 +981,13 @@ extension InferenceEngine {
                         }
                     }
                     
+                    // System text with no user message after it (a system-only request, or
+                    // a system message last) was dropped, and a prompt with no user turn
+                    // failed in the chat template. Give it its own user turn.
+                    let leftoverContext = pendingSystemContext.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !leftoverContext.isEmpty {
+                        finalMessages.append(["role": "user", "content": leftoverContext])
+                    }
                     let mlxMessages = finalMessages
                     var params = GenerateParameters(
                         maxTokens: config.maxTokens,
