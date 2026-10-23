@@ -234,6 +234,16 @@ final class ServerManager: ObservableObject {
                         .compactMap { InferenceEngine.templateValue($0) as? [String: any Sendable] }
                     if tools?.isEmpty == true || json["tool_choice"] as? String == "none" { tools = nil }
                     let requestTools = tools
+                    // Each declared tool's parameter types, for reading back calls the library
+                    // rejected ("string" values stay text, others are parsed as JSON).
+                    var toolSchemas: [String: [String: String]] = [:]
+                    for tool in tools ?? [] {
+                        guard let function = tool["function"] as? [String: any Sendable],
+                              let name = function["name"] as? String else { continue }
+                        let properties = (function["parameters"] as? [String: any Sendable])?["properties"] as? [String: any Sendable] ?? [:]
+                        toolSchemas[name] = properties.compactMapValues { ($0 as? [String: any Sendable])?["type"] as? String }
+                    }
+                    let toolNames = toolSchemas
 
                     // 3. Build request config from persisted user defaults + per-request overrides
                     var reqConfig = GenerationConfig.load()
@@ -298,19 +308,46 @@ final class ServerManager: ObservableObject {
                         let sseStream = AsyncStream<ByteBuffer> { cont in
                             let producer = Task {
                                 var toolCallCount = 0
+                                // Text from a `<tool_call>` the library did not take as a call:
+                                // held back, then sent as calls if it parses, else as text.
+                                var heldCall = ""
+                                func contentChunk(_ text: String) -> ByteBuffer {
+                                    ByteBuffer(string: "data: {\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"content\":\"\(jsonEscape(text))\"},\"finish_reason\":null}]}\n\n")
+                                }
+                                func toolCallChunk(_ call: ChatMessage.ToolCallRecord) -> ByteBuffer {
+                                    defer { toolCallCount += 1 }
+                                    return ByteBuffer(string: "data: {\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[\(toolCallJSON(call, index: toolCallCount))]},\"finish_reason\":null}]}\n\n")
+                                }
                                 for await token in await engine.generate(messages: chatMessages, config: reqConfig, origin: .api, tools: requestTools) {
+                                    if !toolNames.isEmpty, !token.isThinking, token.toolCall == nil, token.usage == nil {
+                                        if heldCall.isEmpty, let start = token.text.range(of: "<tool_call>") {
+                                            let before = String(token.text[..<start.lowerBound])
+                                            if !before.isEmpty { cont.yield(contentChunk(before)) }
+                                            heldCall = String(token.text[start.lowerBound...])
+                                            continue
+                                        } else if !heldCall.isEmpty {
+                                            heldCall += token.text
+                                            continue
+                                        }
+                                    }
                                     // The closing token carries the counts. Send them as the
                                     // final chunk with `finish_reason`, as OpenAI does.
                                     if let usage = token.usage {
+                                        if !heldCall.isEmpty {
+                                            if let recovered = ServerManager.recoverToolCalls(from: heldCall, toolNames: toolNames) {
+                                                for call in recovered.calls { cont.yield(toolCallChunk(call)) }
+                                            } else {
+                                                cont.yield(contentChunk(heldCall))
+                                            }
+                                            heldCall = ""
+                                        }
                                         let reason = toolCallCount > 0 ? "tool_calls" : finishReason(usage)
                                         let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"\(reason)\"}],\(usageJSON(usage))}"
                                         cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
                                         continue
                                     }
                                     if let call = token.toolCall {
-                                        let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[\(toolCallJSON(call, index: toolCallCount))]},\"finish_reason\":null}]}"
-                                        cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
-                                        toolCallCount += 1
+                                        cont.yield(toolCallChunk(call))
                                         continue
                                     }
                                     // Thinking goes in `reasoning_content`, as other OpenAI-style
@@ -319,6 +356,8 @@ final class ServerManager: ObservableObject {
                                     let chunk = "{\"id\":\"\(reqId)\",\"object\":\"chat.completion.chunk\",\"created\":\(created),\"model\":\(escapedModelId),\"choices\":[{\"index\":0,\"delta\":{\"\(field)\":\"\(jsonEscape(token.text))\"},\"finish_reason\":null}]}"
                                     cont.yield(ByteBuffer(string: "data: \(chunk)\n\n"))
                                 }
+                                // A failed generation ends without the closing token.
+                                if !heldCall.isEmpty { cont.yield(contentChunk(heldCall)) }
                                 cont.yield(ByteBuffer(string: "data: [DONE]\n\n"))
                                 cont.finish()
                             }
@@ -339,6 +378,11 @@ final class ServerManager: ObservableObject {
                             if let counts = token.usage { usage = counts; continue }
                             if let call = token.toolCall { toolCalls.append(call); continue }
                             if token.isThinking { reasoning += token.text } else { fullText += token.text }
+                        }
+                        if toolCalls.isEmpty, !toolNames.isEmpty,
+                           let recovered = ServerManager.recoverToolCalls(from: fullText, toolNames: toolNames) {
+                            toolCalls = recovered.calls
+                            fullText = recovered.text
                         }
                         // The answer follows the thought after a blank line.
                         fullText = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -407,5 +451,70 @@ final class ServerManager: ObservableObject {
         isOnline = false
         runningConfiguration = nil
         restartRequired = false
+    }
+
+    /// Tool calls in `<tool_call>` text that the library rejected, such as Qwen writing
+    /// `<function=list_files></parameter></function>` for a tool without arguments: an
+    /// agent got that as its answer and stopped. Takes Qwen's XML form and the JSON form,
+    /// and only names of tools the request declared. Returns the text before the first call.
+    /// `toolNames` maps each declared tool to its parameters' JSON Schema types.
+    nonisolated static func recoverToolCalls(from text: String, toolNames: [String: [String: String]])
+        -> (text: String, calls: [ChatMessage.ToolCallRecord])?
+    {
+        guard let first = text.range(of: "<tool_call>") else { return nil }
+        let blocks = text[first.lowerBound...].components(separatedBy: "<tool_call>").dropFirst()
+            .map { $0.components(separatedBy: "</tool_call>")[0] }
+        let calls = blocks.compactMap { block -> ChatMessage.ToolCallRecord? in
+            guard let parsed = xmlToolCall(block, toolNames: toolNames) ?? jsonToolCall(block),
+                  toolNames[parsed.name] != nil,
+                  JSONSerialization.isValidJSONObject(parsed.arguments),
+                  let data = try? JSONSerialization.data(withJSONObject: parsed.arguments)
+            else { return nil }
+            return .init(id: "call_\(UUID().uuidString.prefix(8).lowercased())", name: parsed.name,
+                         arguments: String(decoding: data, as: UTF8.self))
+        }
+        return calls.isEmpty ? nil : (String(text[..<first.lowerBound]), calls)
+    }
+
+    /// `<function=name><parameter=key>value</parameter></function>`, stray tags ignored.
+    private nonisolated static func xmlToolCall(_ block: String, toolNames: [String: [String: String]])
+        -> (name: String, arguments: [String: Any])?
+    {
+        let ns = block as NSString
+        guard let fn = try? NSRegularExpression(pattern: #"<function=([^>\s]+)\s*>"#),
+              let match = fn.firstMatch(in: block, range: NSRange(location: 0, length: ns.length))
+        else { return nil }
+        let name = ns.substring(with: match.range(at: 1))
+        let types = toolNames[name] ?? [:]
+        var arguments: [String: Any] = [:]
+        if let param = try? NSRegularExpression(pattern: #"<parameter=([^>\s]+)\s*>(.*?)</parameter>"#,
+                                                options: .dotMatchesLineSeparators) {
+            for m in param.matches(in: block, range: NSRange(location: 0, length: ns.length)) {
+                let key = ns.substring(with: m.range(at: 1))
+                var value = ns.substring(with: m.range(at: 2))
+                if value.hasPrefix("\n") { value.removeFirst() }
+                if value.hasSuffix("\n") { value.removeLast() }
+                // A non-string parameter (number, boolean, array, object) arrives as JSON text.
+                if let type = types[key], type != "string",
+                   let data = value.data(using: .utf8),
+                   let parsed = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed) {
+                    arguments[key] = parsed
+                } else {
+                    arguments[key] = value
+                }
+            }
+        }
+        return (name, arguments)
+    }
+
+    /// `{"name": …, "arguments": {…}}` (or "parameters").
+    private nonisolated static func jsonToolCall(_ block: String) -> (name: String, arguments: [String: Any])? {
+        guard let open = block.firstIndex(of: "{"), let close = block.lastIndex(of: "}"),
+              let data = String(block[open...close]).data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let name = object["name"] as? String
+        else { return nil }
+        let arguments = object["arguments"] as? [String: Any] ?? object["parameters"] as? [String: Any] ?? [:]
+        return (name, arguments)
     }
 }
