@@ -14,15 +14,34 @@ public enum SwiftBuddyTheme {
     public static let surface = Color(nsColor: .controlBackgroundColor)
     public static let surfaceElevated = Color(nsColor: .gridColor)
     #else
-    /// Deep navy-black canvas — the app's primary background.
-    public static let background = Color(hue: 0.67, saturation: 0.20, brightness: 0.07)
+    // Each iOS surface has a dark (the original navy-black) and a light variant, chosen by
+    // the active appearance, so the Light and System settings in Appearance actually work.
+    /// Deep navy-black canvas in dark mode, soft off-white in light mode.
+    public static let background = SwiftBuddyTheme.adaptive(
+        dark: UIColor(hue: 0.67, saturation: 0.20, brightness: 0.07, alpha: 1),
+        light: UIColor(hue: 0.67, saturation: 0.04, brightness: 0.96, alpha: 1))
     /// Slightly elevated surface for cards and panels.
-    public static let surface = Color(hue: 0.67, saturation: 0.18, brightness: 0.12)
+    public static let surface = SwiftBuddyTheme.adaptive(
+        dark: UIColor(hue: 0.67, saturation: 0.18, brightness: 0.12, alpha: 1),
+        light: UIColor(white: 1.0, alpha: 1))
     /// Second elevation — dialogs, popovers.
-    public static let surfaceElevated = Color(hue: 0.67, saturation: 0.15, brightness: 0.17)
+    public static let surfaceElevated = SwiftBuddyTheme.adaptive(
+        dark: UIColor(hue: 0.67, saturation: 0.15, brightness: 0.17, alpha: 1),
+        light: UIColor(hue: 0.67, saturation: 0.05, brightness: 0.92, alpha: 1))
+
+    private static func adaptive(dark: UIColor, light: UIColor) -> Color {
+        Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark ? dark : light
+        })
+    }
     #endif
-    /// Subtle divider / separator.
-    public static let divider = Color.white.opacity(0.08)
+    /// Subtle divider / separator. `Color.primary` is white in dark mode and black in light
+    /// mode, so these follow the appearance without separate light and dark values.
+    public static let divider = Color.primary.opacity(0.10)
+    /// Hairline around cards, bubbles and chips.
+    public static let cardStroke = Color.primary.opacity(0.09)
+    /// Faint fill for chips, disabled buttons and similar inset shapes.
+    public static let subtleFill = Color.primary.opacity(0.08)
 
     // ── Brand accents ─────────────────────────────────────────────────────────
     /// Primary accent — vivid indigo.
@@ -43,9 +62,9 @@ public enum SwiftBuddyTheme {
     public static let textSecondary = Color(nsColor: .secondaryLabelColor)
     public static let textTertiary  = Color(nsColor: .tertiaryLabelColor)
     #else
-    public static let textPrimary   = Color.white
-    public static let textSecondary = Color.white.opacity(0.60)
-    public static let textTertiary  = Color.white.opacity(0.35)
+    public static let textPrimary   = Color.primary
+    public static let textSecondary = Color.primary.opacity(0.60)
+    public static let textTertiary  = Color.primary.opacity(0.38)
     #endif
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -80,13 +99,24 @@ public enum SwiftBuddyTheme {
     )
 
     /// Thinking panel tint.
-    public static let thinkingGradient = LinearGradient(
-        colors: [
+    public static let thinkingGradient: LinearGradient = {
+        #if os(macOS)
+        let colors = [
             Color(hue: 0.76, saturation: 0.40, brightness: 0.18),
             Color(hue: 0.72, saturation: 0.35, brightness: 0.16)
-        ],
-        startPoint: .topLeading, endPoint: .bottomTrailing
-    )
+        ]
+        #else
+        let colors = [
+            SwiftBuddyTheme.adaptive(
+                dark: UIColor(hue: 0.76, saturation: 0.40, brightness: 0.18, alpha: 1),
+                light: UIColor(hue: 0.76, saturation: 0.10, brightness: 0.96, alpha: 1)),
+            SwiftBuddyTheme.adaptive(
+                dark: UIColor(hue: 0.72, saturation: 0.35, brightness: 0.16, alpha: 1),
+                light: UIColor(hue: 0.72, saturation: 0.08, brightness: 0.93, alpha: 1))
+        ]
+        #endif
+        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    }()
 
     // ─────────────────────────────────────────────────────────────────────────
     // MARK: — Corner Radii
@@ -145,7 +175,7 @@ extension View {
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay(
                 RoundedRectangle(cornerRadius: cornerRadius)
-                    .strokeBorder(Color.white.opacity(0.09), lineWidth: 1)
+                    .strokeBorder(SwiftBuddyTheme.cardStroke, lineWidth: 1)
             )
     }
 }

@@ -156,7 +156,7 @@ struct MessageBubble: View {
                     .clipShape(AssistantBubbleShape())
                     .overlay(
                         AssistantBubbleShape()
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                            .stroke(SwiftBuddyTheme.cardStroke, lineWidth: 1)
                     )
                     .shadow(
                         color: SwiftBuddyTheme.shadowBubble.color,
@@ -286,7 +286,7 @@ struct StreamingBubble: View {
         .clipShape(AssistantBubbleShape())
         .overlay(
             AssistantBubbleShape()
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(SwiftBuddyTheme.cardStroke, lineWidth: 1)
         )
         .shadow(
             color: SwiftBuddyTheme.shadowBubble.color,
@@ -309,7 +309,7 @@ struct StreamingBubble: View {
         .clipShape(AssistantBubbleShape())
         .overlay(
             AssistantBubbleShape()
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                .stroke(SwiftBuddyTheme.cardStroke, lineWidth: 1)
         )
     }
 }

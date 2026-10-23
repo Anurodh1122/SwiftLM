@@ -85,7 +85,7 @@ struct ModelManagementView: View {
                         #if os(macOS)
                         Color(nsColor: .windowBackgroundColor).ignoresSafeArea()
                         #else
-                        Color(hue: 0.67, saturation: 0.20, brightness: 0.07).ignoresSafeArea()
+                        SwiftBuddyTheme.background.ignoresSafeArea()
                         #endif
                         
                         // We must duplicate this manually wrapped view component from ModelPickerView

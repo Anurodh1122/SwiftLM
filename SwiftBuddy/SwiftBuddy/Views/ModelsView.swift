@@ -103,7 +103,7 @@ struct ModelsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium))
                         .overlay(
                             RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium)
-                                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
+                                .strokeBorder(SwiftBuddyTheme.cardStroke, lineWidth: 1)
                         )
                         .padding(.horizontal)
                         .padding(.bottom, 10)
@@ -157,7 +157,7 @@ struct ModelsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium))
                         .overlay(
                             RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium)
-                                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
+                                .strokeBorder(SwiftBuddyTheme.cardStroke, lineWidth: 1)
                         )
                         .padding(.horizontal)
                         .padding(.bottom, 10)
@@ -180,7 +180,7 @@ struct ModelsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium))
                         .overlay(
                             RoundedRectangle(cornerRadius: SwiftBuddyTheme.radiusMedium)
-                                .strokeBorder(Color.white.opacity(0.07), lineWidth: 1)
+                                .strokeBorder(SwiftBuddyTheme.cardStroke, lineWidth: 1)
                         )
                     }
                     .buttonStyle(.plain)

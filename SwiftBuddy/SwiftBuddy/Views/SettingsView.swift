@@ -225,7 +225,7 @@ struct SettingsView: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+                .strokeBorder(SwiftBuddyTheme.cardStroke, lineWidth: 1)
         )
     }
 
@@ -495,7 +495,7 @@ struct SettingsView: View {
                                 .strokeBorder(
                                     server.isOnline
                                         ? SwiftBuddyTheme.success.opacity(0.3)
-                                        : Color.white.opacity(0.07),
+                                        : SwiftBuddyTheme.subtleFill,
                                     lineWidth: 1
                                 )
                         )
@@ -1092,7 +1092,7 @@ struct SettingsView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(Color.white.opacity(0.06), lineWidth: 1)
+                    .strokeBorder(SwiftBuddyTheme.cardStroke, lineWidth: 1)
             )
         }
         .padding(.horizontal, 16)
@@ -1265,10 +1265,10 @@ final class ConsoleLog {
 
             var textColor: Color {
                 switch self {
-                case .info:    return .white.opacity(0.9)
+                case .info:    return SwiftBuddyTheme.textPrimary.opacity(0.9)
                 case .warning: return .orange.opacity(0.9)
                 case .error:   return .red.opacity(0.9)
-                case .debug:   return .white.opacity(0.5)
+                case .debug:   return SwiftBuddyTheme.textSecondary
                 }
             }
         }

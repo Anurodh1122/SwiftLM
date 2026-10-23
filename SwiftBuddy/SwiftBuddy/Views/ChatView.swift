@@ -393,7 +393,7 @@ struct ChatView: View {
                     .strokeBorder(
                         inputFocused
                             ? SwiftBuddyTheme.accent.opacity(0.55)
-                            : Color.white.opacity(0.08),
+                            : SwiftBuddyTheme.subtleFill,
                         lineWidth: inputFocused ? 1.5 : 1
                     )
                     .animation(SwiftBuddyTheme.quickSpring, value: inputFocused)
@@ -417,7 +417,7 @@ struct ChatView: View {
                 Button(action: sendMessage) {
                     ZStack {
                         Circle()
-                            .fill(canSend ? AnyShapeStyle(SwiftBuddyTheme.userBubbleGradient) : AnyShapeStyle(Color.white.opacity(0.08)))
+                            .fill(canSend ? AnyShapeStyle(SwiftBuddyTheme.userBubbleGradient) : AnyShapeStyle(SwiftBuddyTheme.subtleFill))
                             .frame(width: 40, height: 40)
                         Image(systemName: "arrow.up")
                             .font(.system(size: 15, weight: .bold))
@@ -507,7 +507,7 @@ struct ChatView: View {
         .background(.ultraThinMaterial)
         .background(SwiftBuddyTheme.surface.opacity(0.70))
         .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.09), lineWidth: 1))
+        .overlay(Capsule().strokeBorder(SwiftBuddyTheme.cardStroke, lineWidth: 1))
     }
     #endif
 
