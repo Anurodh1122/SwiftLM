@@ -145,6 +145,15 @@ jobs:
               else:
                   sys.exit(f"Expected 3 of {old!r} in {path}, found {n}; update the patch step.")
 
+          # The LRU expert cache path (MLX_MOE_STACKED, on for iOS) printed and flushed a
+          # line for every layer of every token, about 40 log writes per token.
+          noisy = ('            print("[SwitchLayers] SSD Sync: GPU drained. Misses=\\(missesNeedingPread.count)")\n'
+                   '            fflush(stdout)\n')
+          if src.count(noisy) == 1:
+              src = src.replace(noisy, "")
+          elif "SSD Sync: GPU drained" in src:
+              sys.exit("Unexpected SSD Sync logging in " + path + "; update the patch step.")
+
           open(path, "w", encoding="utf-8").write(src)
           print("patched", path)
           PY

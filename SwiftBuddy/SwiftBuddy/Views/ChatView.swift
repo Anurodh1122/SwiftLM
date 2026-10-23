@@ -537,10 +537,22 @@ struct ChatView: View {
             Menu {
                 // Open that persona's own chat. Setting only the persona kept the
                 // current chat's messages on screen under a different prompt.
-                Button("No Persona") { viewModel.openConversation(wing: nil) }
+                Button { viewModel.openConversation(wing: nil) } label: {
+                    if viewModel.currentWing == nil {
+                        Label("No Persona", systemImage: "checkmark")
+                    } else {
+                        Text("No Persona")
+                    }
+                }
                 Divider()
                 ForEach(wings) { wing in
-                    Button(wing.name) { viewModel.openConversation(wing: wing.name) }
+                    Button { viewModel.openConversation(wing: wing.name) } label: {
+                        if viewModel.currentWing == wing.name {
+                            Label(wing.name, systemImage: "checkmark")
+                        } else {
+                            Text(wing.name)
+                        }
+                    }
                 }
             } label: {
                 Image(systemName: viewModel.currentWing == nil ? "brain" : "brain.head.profile")

@@ -20,7 +20,9 @@ final class ChatViewModel: ObservableObject {
     }() {
         didSet { scheduleSystemPromptSave() }
     }
-    public var currentWing: String? = nil
+    // Published so the title, the persona badge and the menu's checkmark follow it; as a
+    // plain property, picking a persona in the chat's menu changed nothing on screen.
+    @Published public var currentWing: String? = nil
     weak var engine: InferenceEngine?
     var modelContext: ModelContext?
     private var generationTask: Task<Void, Never>?

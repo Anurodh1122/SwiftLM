@@ -216,6 +216,16 @@ public final class InferenceEngine: ObservableObject {
     private static let backgroundGracePeriod: TimeInterval = 30
 
     public init() {
+        #if os(iOS)
+        // SSD-streamed MoE models: keep recently used experts in a per-layer LRU cache and
+        // run one matmul per projection over it. The default path re-read every expert of
+        // the previous token from storage on each token and issued a matmul per expert,
+        // which held the 35B-A3B to about 1.3 tokens/s. 12 slots of ~1.6 MB across 40
+        // layers is ~0.75 GB, which fits next to the resident weights in the ~5 GB limit.
+        // The library reads these once, on the first MoE forward pass, so set them first.
+        setenv("MLX_MOE_STACKED", "1", 0)
+        setenv("MLX_MOE_CACHE_SLOTS", "12", 0)
+        #endif
         setupPressureHandlers()
     }
 
