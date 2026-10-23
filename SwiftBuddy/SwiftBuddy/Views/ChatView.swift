@@ -9,6 +9,7 @@ struct ChatView: View {
     @ObservedObject var viewModel: ChatViewModel
     @EnvironmentObject private var engine: InferenceEngine
     @Query(sort: \PalaceWing.createdDate) var wings: [PalaceWing]
+    @Query(sort: \ChatSession.createdAt, order: .reverse) private var sessions: [ChatSession]
 
     // macOS-only sheet control (iOS: these are tabs)
     var showSettings: Binding<Bool>? = nil
@@ -497,6 +498,32 @@ struct ChatView: View {
             }
         }
         
+        // New chat and earlier chats. There used to be one chat per persona for good;
+        // the trash button below still clears the open one.
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Button { viewModel.startNewChat() } label: {
+                    Label("New Chat", systemImage: "square.and.pencil")
+                }
+                if !chatHistory.isEmpty {
+                    Section("Recent Chats") {
+                        ForEach(chatHistory) { session in
+                            Button { viewModel.openSession(session) } label: {
+                                if session.id == viewModel.activeSessionID {
+                                    Label(chatTitle(session), systemImage: "checkmark")
+                                } else {
+                                    Text(chatTitle(session))
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "square.and.pencil")
+                    .foregroundStyle(SwiftBuddyTheme.textSecondary)
+            }
+        }
+
         // Clear Conversation
         ToolbarItem(placement: .topBarTrailing) {
             Button { withAnimation { viewModel.clearHistory() } } label: {
@@ -528,6 +555,23 @@ struct ChatView: View {
         .overlay(Capsule().strokeBorder(SwiftBuddyTheme.cardStroke, lineWidth: 1))
     }
     #endif
+
+    /// This persona's (or the core chat's) earlier chats with something in them, newest first.
+    private var chatHistory: [ChatSession] {
+        Array(sessions.lazy
+            .filter { $0.wingName == viewModel.currentWing && !$0.turns.isEmpty }
+            .prefix(20))
+    }
+
+    /// The chat's first message, shortened, and when it was started.
+    private func chatTitle(_ session: ChatSession) -> String {
+        let first = session.turns
+            .filter { $0.roleRaw == "user" }
+            .min { $0.timestamp < $1.timestamp }?
+            .content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let short = first.isEmpty ? "Chat" : (first.count > 40 ? String(first.prefix(40)) + "…" : first)
+        return "\(short) · \(session.createdAt.formatted(date: .abbreviated, time: .shortened))"
+    }
 
     /// While generating, keep the model's name in view and say when the request came
     /// from the local API server rather than this chat.

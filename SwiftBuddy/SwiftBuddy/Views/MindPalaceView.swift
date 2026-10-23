@@ -12,6 +12,7 @@ struct MindPalaceView: View {
     @State private var isPhysicsSettled = false
     @State private var draggedNodeId: String? = nil
     @State private var simulationSteps = 0
+    @State private var dragFit: GraphFit? = nil
     
     // Timer
     private let timer = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
@@ -35,9 +36,16 @@ struct MindPalaceView: View {
                 }
             } else {
                 GeometryReader { proxy in
-                    let canvasCenter = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
-                    
+                    // Draw in graph coordinates, scaled and centred so the whole graph is
+                    // on screen. Positions are unbounded, so drawing them in screen points
+                    // pushed larger graphs off the edges. Frozen while a node is dragged so
+                    // the view doesn't shift under the finger.
+                    let fit = dragFit ?? fitTransform(in: proxy.size)
+
                     Canvas { context, size in
+                        context.translateBy(x: fit.offset.x, y: fit.offset.y)
+                        context.scaleBy(x: fit.scale, y: fit.scale)
+
                         // Draw Edges
                         for edge in edges {
                             if let source = nodes[edge.sourceId], let target = nodes[edge.targetId] {
@@ -75,10 +83,12 @@ struct MindPalaceView: View {
                     .gesture(
                         DragGesture(minimumDistance: 0)
                             .onChanged { value in
+                                let location = fit.toGraph(value.location)
                                 // Find nearest
                                 if draggedNodeId == nil {
-                                    if let nearest = nodes.values.min(by: { distance($0.position, value.location) < distance($1.position, value.location) }) {
-                                        if distance(nearest.position, value.location) < 30 {
+                                    if let nearest = nodes.values.min(by: { distance($0.position, location) < distance($1.position, location) }) {
+                                        if distance(nearest.position, location) < 30 / fit.scale {
+                                            dragFit = fit
                                             draggedNodeId = nearest.id
                                             isPhysicsSettled = false
                                             simulationSteps = 0
@@ -87,17 +97,18 @@ struct MindPalaceView: View {
                                 }
                                 
                                 if let id = draggedNodeId {
-                                    nodes[id]?.position = value.location
+                                    nodes[id]?.position = location
                                     nodes[id]?.velocity = .zero
                                 }
                             }
                             .onEnded { _ in
                                 draggedNodeId = nil
+                                dragFit = nil
                             }
                     )
                     .onReceive(timer) { _ in
                         if !isPhysicsSettled {
-                            stepSimulation(center: canvasCenter)
+                            stepSimulation(center: .zero)
                         }
                     }
                 }
@@ -129,23 +140,15 @@ struct MindPalaceView: View {
         var newNodes: [String: ForceNode] = [:]
         var newEdges: [ForceEdge] = []
         
-        #if os(macOS)
-        let cx = NSScreen.main?.frame.width ?? 800
-        let cy = NSScreen.main?.frame.height ?? 600
-        #else
-        let cx = UIScreen.main.bounds.width
-        let cy = UIScreen.main.bounds.height
-        #endif
-        
         for triple in triples {
             let sId = triple.subject.lowercased()
             let oId = triple.object.lowercased()
             
             if newNodes[sId] == nil {
-                newNodes[sId] = ForceNode(id: sId, name: triple.subject, position: randomPoint(around: CGPoint(x: cx/2, y: cy/2)))
+                newNodes[sId] = ForceNode(id: sId, name: triple.subject, position: randomPoint(around: .zero))
             }
             if newNodes[oId] == nil {
-                newNodes[oId] = ForceNode(id: oId, name: triple.object, position: randomPoint(around: CGPoint(x: cx/2, y: cy/2)))
+                newNodes[oId] = ForceNode(id: oId, name: triple.object, position: randomPoint(around: .zero))
             }
             
             newEdges.append(ForceEdge(sourceId: sId, targetId: oId, predicate: triple.predicate))
@@ -163,6 +166,28 @@ struct MindPalaceView: View {
         return CGPoint(x: center.x + r * cos(theta), y: center.y + r * sin(theta))
     }
     
+    /// Scale and offset that fit every node, with room for its label, into `size`.
+    private func fitTransform(in size: CGSize) -> GraphFit {
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        guard let first = nodes.values.first, size.width > 0, size.height > 0 else {
+            return GraphFit(scale: 1, offset: center)
+        }
+        var minX = first.position.x, maxX = minX, minY = first.position.y, maxY = minY
+        for node in nodes.values {
+            minX = min(minX, node.position.x); maxX = max(maxX, node.position.x)
+            minY = min(minY, node.position.y); maxY = max(maxY, node.position.y)
+        }
+        let margin: CGFloat = 80 // labels sit below and extend beyond the dots
+        let width = maxX - minX + 2 * margin
+        let height = maxY - minY + 2 * margin
+        // Never enlarge past 1.2x, and below 0.3x labels become unreadable anyway.
+        let scale = max(0.3, min(1.2, size.width / width, size.height / height))
+        let graphCenter = CGPoint(x: (minX + maxX) / 2, y: (minY + maxY) / 2)
+        return GraphFit(
+            scale: scale,
+            offset: CGPoint(x: center.x - graphCenter.x * scale, y: center.y - graphCenter.y * scale))
+    }
+
     private func distance(_ p1: CGPoint, _ p2: CGPoint) -> CGFloat {
         hypot(p1.x - p2.x, p1.y - p2.y)
     }
@@ -257,6 +282,17 @@ struct MindPalaceView: View {
 }
 
 // Data structures
+
+/// Maps graph coordinates to the screen: screen = graph × scale + offset.
+fileprivate struct GraphFit {
+    var scale: CGFloat
+    var offset: CGPoint
+
+    func toGraph(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: (point.x - offset.x) / scale, y: (point.y - offset.y) / scale)
+    }
+}
+
 fileprivate struct ForceNode {
     let id: String
     let name: String

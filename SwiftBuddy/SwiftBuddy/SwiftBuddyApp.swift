@@ -35,6 +35,13 @@ struct SwiftBuddyApp: App {
     @StateObject private var appearance = AppearanceStore()
     @StateObject private var server = ServerManager()
 
+    init() {
+        #if os(iOS)
+        // First, so everything printed from here on lands in Documents/Logs.
+        DiagnosticsLog.start()
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             MainContentView(engine: engine, appearance: appearance, server: server)

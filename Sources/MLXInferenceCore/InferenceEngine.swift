@@ -829,6 +829,7 @@ extension InferenceEngine {
                 defer { self.isGenerationActive = false }
 
                 guard let container = self.container else {
+                    print("[InferenceEngine] generate (\(origin)): no model loaded, nothing generated")
                     continuation.finish(); return
                 }
 
@@ -910,13 +911,15 @@ extension InferenceEngine {
                         messages: mlxMessages,
                         additionalContext: additionalContext
                     )
+                    print("[InferenceEngine] generate (\(origin)): \(messages.count) messages, prefill chunk \(params.prefillStepSize.map { "\($0)" } ?? "default")")
                     let lmInput = try await container.prepare(input: userInput)
-                    
+
                     // Use the real token count from the prepared LMInput rather than
                     // a character-length heuristic (which was consistently off by 2–3×
                     // for CJK and code content).
                     let baseTokens = lmInput.text.tokens.size
                     self.activeContextTokens = baseTokens
+                    print("[InferenceEngine] prompt: \(baseTokens) tokens")
                     
                     // maxContextWindow is already set during loadModel() from config.json
 
@@ -964,6 +967,7 @@ extension InferenceEngine {
                             // Record time-to-first-token on the very first chunk
                             if firstTokenDate == nil {
                                 firstTokenDate = Date()
+                                print("[InferenceEngine] first token after \(String(format: "%.1f", Date().timeIntervalSince(generationStart))) s")
                             }
 
                             outputText += text
@@ -1018,6 +1022,7 @@ extension InferenceEngine {
                     let decodeTps = (decodeElapsed > 0 && tokenCount > 1)
                         ? Double(tokenCount - 1) / decodeElapsed
                         : 0
+                    print("[InferenceEngine] done: \(tokenCount) tokens, \(outputText.count) chars, \(String(format: "%.1f", decodeTps)) tok/s, cancelled=\(Task.isCancelled), stopped=\(self.stopRequested)")
                     self.lastMetrics = InferenceMetrics(
                         ttft: ttft,
                         prefillToksPerSec: prefillTps,
@@ -1031,6 +1036,7 @@ extension InferenceEngine {
                     continuation.yield(GenerationToken(text: "\n\n[Error: \(msg)]"))
                     self.markModelCorrupted(modelId: self.currentModelId, message: msg)
                 } catch {
+                    print("[InferenceEngine] generation failed: \(error.localizedDescription)")
                     // Check if the generic error is also an SSD streaming issue
                     if Self.isModelCorruptionError(error) {
                         let msg = "Model weights are corrupted or incomplete. Please re-download the model."

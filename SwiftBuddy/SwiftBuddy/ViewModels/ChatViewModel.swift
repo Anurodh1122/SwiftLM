@@ -96,7 +96,8 @@ final class ChatViewModel: ObservableObject {
             while shouldGenerateAgain && depth < 3 {
                 shouldGenerateAgain = false
                 depth += 1
-                
+                print("[Chat] round \(depth): \(latestMessages.count) messages, thinking \(config.enableThinking ? "on" : "off")")
+
                 var response = ""
                 var thinking = ""
                 var hasRawThinkTags = false
@@ -167,7 +168,11 @@ final class ChatViewModel: ObservableObject {
                 // saved the partial reply and reset the UI, so committing `response` again here
                 // duplicated it, could land it in the next conversation, and could even run a
                 // tool the user had just stopped.
-                if Task.isCancelled { return }
+                if Task.isCancelled {
+                    print("[Chat] round \(depth) cancelled after \(response.count) chars")
+                    return
+                }
+                print("[Chat] round \(depth) reply: \(response.count) chars (visible \(liveText.count), thinking \((liveThinking ?? thinking).count))")
                 // Publish the last tokens the throttle held back; `thinkingText` is also
                 // what the committed message records below.
                 streamingText = liveText
@@ -175,6 +180,7 @@ final class ChatViewModel: ObservableObject {
 
                 // First, check if there's a tool call in the complete response
                 if let toolCall = ExtractionService.extractToolCall(from: response) {
+                    print("[Chat] round \(depth): tool call \(toolCall.name)")
                     // Extract text BEFORE the tool call to save as assistant message
                     if let startRange = response.range(of: "<tool_call>") {
                         let textBeforeTool = String(response[..<startRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -226,6 +232,7 @@ final class ChatViewModel: ObservableObject {
                     // Trim leading newlines that often follow thought blocks
                     finalVisible = finalVisible.trimmingCharacters(in: .whitespacesAndNewlines)
                     
+                    print("[Chat] round \(depth): saving \(finalVisible.count) visible chars")
                     if !finalVisible.isEmpty {
                         let msg = ChatMessage.assistant(finalVisible, thinkingContent: thinkingText)
                         messages.append(msg)
@@ -279,29 +286,67 @@ final class ChatViewModel: ObservableObject {
         newConversation()
     }
 
+    /// The chat currently open, so the history list can mark it.
+    var activeSessionID: UUID? { activeSession?.id }
+
+    /// Starts a fresh chat for the current wing; earlier chats stay in the history list.
+    /// An empty chat is reused rather than piling up blank ones.
+    func startNewChat() {
+        stopGeneration()
+        guard let context = modelContext else {
+            messages = []
+            return
+        }
+        if let session = activeSession, session.turns.isEmpty {
+            messages = []
+            return
+        }
+        let newSession = ChatSession(wingName: currentWing)
+        context.insert(newSession)
+        try? context.save()
+        activeSession = newSession
+        messages = []
+    }
+
+    /// Reopens an earlier chat from the history list.
+    func openSession(_ session: ChatSession) {
+        guard session.id != activeSession?.id else { return }
+        stopGeneration()
+        currentWing = session.wingName
+        activeSession = session
+        loadMessages(from: session)
+    }
+
+    /// Restores a chat's turns in order.
+    private func loadMessages(from session: ChatSession) {
+        let sortedTurns = session.turns.sorted { $0.timestamp < $1.timestamp }
+        messages = sortedTurns.map { turn in
+            let role: ChatMessage.Role = turn.roleRaw == "assistant" ? .assistant : (turn.roleRaw == "system" ? .system : .user)
+            return ChatMessage(role: role, content: turn.content, thinkingContent: turn.thinkingContent, id: turn.id, timestamp: turn.timestamp)
+        }
+    }
+
     func newConversation() {
         stopGeneration()
-        
+
         let targetWing = currentWing ?? "CORE_SYSTEM"
         
         if let context = modelContext {
             let fetchDesc = FetchDescriptor<ChatSession>()
             let allSessions = try? context.fetch(fetchDesc)
             
-            // Find session matching this wing
-            let session = allSessions?.first(where: { 
-                if targetWing == "CORE_SYSTEM" { return $0.wingName == nil }
-                return $0.wingName == targetWing 
-            })
-            
+            // The most recent chat for this wing (fetch order is arbitrary, so with
+            // several chats per wing an old one could come back).
+            let session = allSessions?
+                .filter {
+                    if targetWing == "CORE_SYSTEM" { return $0.wingName == nil }
+                    return $0.wingName == targetWing
+                }
+                .max { $0.createdAt < $1.createdAt }
+
             if let existing = session {
                 activeSession = existing
-                // Restore history chronologically
-                let sortedTurns = existing.turns.sorted { $0.timestamp < $1.timestamp }
-                messages = sortedTurns.map { turn in
-                    let role: ChatMessage.Role = turn.roleRaw == "assistant" ? .assistant : (turn.roleRaw == "system" ? .system : .user)
-                    return ChatMessage(role: role, content: turn.content, thinkingContent: turn.thinkingContent, id: turn.id, timestamp: turn.timestamp)
-                }
+                loadMessages(from: existing)
             } else {
                 // Creates the fresh session!
                 let wingParam = targetWing == "CORE_SYSTEM" ? nil : targetWing
