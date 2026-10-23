@@ -365,7 +365,9 @@ def pbxproj():
 \t\t\t\tINFOPLIST_KEY_CFBundleDisplayName = "SwiftBuddy Chat";
 \t\t\t\tINFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 SharpAI";
 \t\t\t\tINFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+\t\t\t\tINFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace = YES;
 \t\t\t\tINFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+\t\t\t\tINFOPLIST_KEY_UIFileSharingEnabled = YES;
 \t\t\t\tINFOPLIST_KEY_UILaunchScreen_Generation = YES;
 \t\t\t\tINFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 \t\t\t\tINFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
