@@ -228,6 +228,8 @@ public final class ModelDownloadManager: ObservableObject {
 
     /// Delete a model and free disk space (including any partial downloads).
     public func delete(_ modelId: String) throws {
+        // Stop an in-flight download first so it can't recreate files mid-delete.
+        cancelDownload(modelId: modelId)
         try ModelStorage.delete(modelId)
         refresh()
         if lastLoadedModelId == modelId { lastLoadedModelId = nil }
@@ -283,6 +285,9 @@ public final class ModelDownloadManager: ObservableObject {
                     retryConfig: retryConfig
                 ) { [weak self] fp in
                     Task { @MainActor [weak self] in
+                        // A cancelled download unregisters its task; don't let a late
+                        // progress callback bring the progress card back.
+                        guard self?.downloadTasks[modelId] != nil else { return }
                         self?.activeDownloads[modelId] = ModelDownloadProgress(
                             modelId: modelId,
                             fractionCompleted: fp.overallFraction,
@@ -317,6 +322,7 @@ public final class ModelDownloadManager: ObservableObject {
                                 let smoothedSpeed = speedTracker.speedBytesPerSec
 
                                 Task { @MainActor [weak self] in
+                                    guard self?.downloadTasks[modelId] != nil else { return }
                                     let pct = progress.fractionCompleted
                                     self?.activeDownloads[modelId] = ModelDownloadProgress(
                                         modelId: modelId,
@@ -376,6 +382,15 @@ public final class ModelDownloadManager: ObservableObject {
         downloadTasks[modelId]?.cancel()
         downloadTasks.removeValue(forKey: modelId)
         activeDownloads.removeValue(forKey: modelId)
+    }
+
+    /// Cancel every in-progress download. Partial files are kept, so each one
+    /// reappears under "Resume Downloads" and can be resumed or deleted from there.
+    public func cancelAllDownloads() {
+        for modelId in Set(downloadTasks.keys).union(activeDownloads.keys) {
+            cancelDownload(modelId: modelId)
+        }
+        refreshInBackground()
     }
 
     /// Update progress from an external source (e.g. InferenceEngine's loadContainer callback).

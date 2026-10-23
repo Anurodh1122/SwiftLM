@@ -13,6 +13,7 @@ struct ModelsView: View {
     @State private var showManagement = false
     @State private var device = DeviceProfile.current
     @State private var deleteErrorMessage: String?
+    @State private var pendingDeleteId: String?
 
     private var dm: ModelDownloadManager { engine.downloadManager }
 
@@ -33,7 +34,11 @@ struct ModelsView: View {
                         sectionHeader("Downloading")
                         ForEach(Array(dm.activeDownloads.keys), id: \.self) { modelId in
                             if let progress = dm.activeDownloads[modelId] {
-                                DownloadProgressCard(modelId: modelId, progress: progress)
+                                DownloadProgressCard(
+                                    modelId: modelId,
+                                    progress: progress,
+                                    onCancel: { dm.cancelDownload(modelId: modelId) }
+                                )
                                     .padding(.horizontal)
                                     .padding(.bottom, 10)
                             }
@@ -48,7 +53,7 @@ struct ModelsView: View {
                                 IncompleteDownloadRow(
                                     incomplete: incomplete,
                                     onResume: { dm.resumeDownload(modelId: incomplete.id) },
-                                    onDelete: { deleteModel(incomplete.id) }
+                                    onDelete: { pendingDeleteId = incomplete.id }
                                 )
                                 .padding(.horizontal)
                                 if incomplete.id != dm.incompleteDownloads.last?.id {
@@ -84,7 +89,7 @@ struct ModelsView: View {
                                     entry: entry,
                                     isActive: isActive,
                                     onLoad: { Task { await engine.load(modelId: downloaded.id) } },
-                                    onDelete: { deleteModel(downloaded.id) }
+                                    onDelete: { pendingDeleteId = downloaded.id }
                                 )
                                 .padding(.horizontal)
                                 if downloaded.id != dm.downloadedModels.last?.id {
@@ -212,6 +217,16 @@ struct ModelsView: View {
             ModelManagementView()
                 .environmentObject(engine)
         }
+        .confirmationDialog(
+            deleteDialogTitle,
+            isPresented: deleteDialogPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive, action: confirmPendingDelete)
+            Button("Cancel", role: .cancel) { pendingDeleteId = nil }
+        } message: {
+            Text("This frees the storage it uses and can't be undone.")
+        }
         .alert(
             "Delete Failed",
             isPresented: Binding(
@@ -225,8 +240,33 @@ struct ModelsView: View {
         }
     }
 
+    // Kept out of `body` so the compiler doesn't have to type-check them inline.
+    private var deleteDialogTitle: String {
+        guard let id = pendingDeleteId else { return "Delete model?" }
+        let name = id.components(separatedBy: "/").last ?? id
+        return "Delete \(name)?"
+    }
+
+    private var deleteDialogPresented: Binding<Bool> {
+        Binding<Bool>(
+            get: { pendingDeleteId != nil },
+            set: { isPresented in
+                if !isPresented { pendingDeleteId = nil }
+            }
+        )
+    }
+
+    private func confirmPendingDelete() {
+        if let id = pendingDeleteId { deleteModel(id) }
+        pendingDeleteId = nil
+    }
+
     private func deleteModel(_ modelId: String) {
         do {
+            // Release the loaded model's file mappings before removing its files.
+            if case .ready(let id) = engine.state, id == modelId {
+                engine.unload()
+            }
             try dm.delete(modelId)
         } catch {
             deleteErrorMessage = error.localizedDescription
@@ -326,6 +366,9 @@ private struct ActiveModelCardView: View {
                 Text("\(Int(progress * 100))%")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(SwiftBuddyTheme.textSecondary)
+                Button("Cancel") { engine.downloadManager.cancelAllDownloads() }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(SwiftBuddyTheme.error)
             }
             ProgressView(value: progress).tint(SwiftBuddyTheme.accent)
             Text(speed)
@@ -471,6 +514,7 @@ private struct ActiveModelHeroCard: View {
 private struct DownloadProgressCard: View {
     let modelId: String
     let progress: ModelDownloadProgress
+    let onCancel: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -506,6 +550,13 @@ private struct DownloadProgressCard: View {
                     }
                 }
                 Spacer()
+                Button(action: onCancel) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel download")
             }
             ProgressView(value: progress.fractionCompleted)
                 .tint(SwiftBuddyTheme.accent)
@@ -562,14 +613,19 @@ private struct IncompleteDownloadRow: View {
                     .background(SwiftBuddyTheme.warning, in: Capsule())
             }
             .buttonStyle(.plain)
+
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.body)
+                    .foregroundStyle(SwiftBuddyTheme.error)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Delete partial download")
         }
         .padding(.vertical, 12)
         .contentShape(Rectangle())
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive, action: onDelete) {
-                Label("Delete", systemImage: "trash")
-            }
-        }
     }
 
     private func formatBytes(_ bytes: Int64) -> String {
@@ -636,9 +692,23 @@ private struct DownloadedModelRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+        // Swipe actions only work inside a List, and this screen is a ScrollView, so the
+        // delete action is an explicit trash button next to the row (also on long-press).
+        .padding(.trailing, 40)
+        .overlay(alignment: .trailing) {
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .font(.body)
+                    .foregroundStyle(SwiftBuddyTheme.error)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Delete model")
+        }
+        .contextMenu {
             Button(role: .destructive, action: onDelete) {
-                Label("Delete", systemImage: "trash")
+                Label("Delete Model", systemImage: "trash")
             }
         }
     }

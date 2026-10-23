@@ -30,12 +30,56 @@ public enum ModelStorage {
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".cache/huggingface/hub")
         #else
-        // iOS: Application Support — persistent, NOT purgeable, excluded from iCloud
-        return applicationSupportModelsRoot
+        // iOS: Documents/Models — persistent, NOT purgeable, excluded from iCloud, and
+        // visible in the Files app (the app enables UIFileSharingEnabled), so model
+        // folders can be copied in and out by hand.
+        return documentsModelsRoot
         #endif
     }
 
-    /// iOS-specific persistent models directory.
+    /// iOS models directory inside Documents, browsable in the Files app under
+    /// "On My iPad > <app name> > Models".
+    public static var documentsModelsRoot: URL {
+        _ = migrateLegacyModelsOnce
+        let base = FileManager.default
+            .urls(for: .documentDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("Models", isDirectory: true)
+        ensureDirectory(base)
+        return base
+    }
+
+    /// Earlier builds kept models in Application Support, where the Files app can't
+    /// see them. Move whatever is there into `documentsModelsRoot` the first time the
+    /// root is asked for. Both are on the same volume, so each move is instant.
+    private static let migrateLegacyModelsOnce: Void = {
+        let fm = FileManager.default
+        let legacy = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("SwiftBuddy/Models", isDirectory: true)
+        guard let children = try? fm.contentsOfDirectory(atPath: legacy.path), !children.isEmpty else {
+            return
+        }
+        let destination = fm.urls(for: .documentDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("Models", isDirectory: true)
+        ensureDirectory(destination)
+        for name in children {
+            let target = destination.appendingPathComponent(name)
+            guard !fm.fileExists(atPath: target.path) else { continue }
+            do {
+                try fm.moveItem(at: legacy.appendingPathComponent(name), to: target)
+            } catch {
+                print("[ModelStorage] Could not move \(name) to Documents/Models: \(error.localizedDescription)")
+            }
+        }
+        if (try? fm.contentsOfDirectory(atPath: legacy.path))?.isEmpty == true {
+            try? fm.removeItem(at: legacy)
+        }
+    }()
+
+    /// Legacy iOS models directory (Application Support). No longer used as the
+    /// cache root; kept for source compatibility.
     public static var applicationSupportModelsRoot: URL {
         let base = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)

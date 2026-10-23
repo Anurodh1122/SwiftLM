@@ -70,7 +70,7 @@ struct ModelPickerView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if let (modelId, progress) = downloadManager.activeDownloads.first {
-                    FloatingDownloadBanner(modelId: modelId, progress: progress)
+                    FloatingDownloadBanner(modelId: modelId, progress: progress, onCancel: { downloadManager.cancelDownload(modelId: modelId) })
                         .padding(.vertical, 8)
                 }
             }
@@ -102,7 +102,7 @@ struct ModelPickerView: View {
             }
             .safeAreaInset(edge: .bottom) {
                 if let (modelId, progress) = engine.downloadManager.activeDownloads.first {
-                    FloatingDownloadBanner(modelId: modelId, progress: progress)
+                    FloatingDownloadBanner(modelId: modelId, progress: progress, onCancel: { engine.downloadManager.cancelDownload(modelId: modelId) })
                         .padding(.vertical, 8)
                 }
             }
@@ -658,6 +658,7 @@ struct ModelCard: View {
 struct FloatingDownloadBanner: View {
     let modelId: String
     let progress: ModelDownloadProgress
+    var onCancel: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -694,6 +695,15 @@ struct FloatingDownloadBanner: View {
                 }
             }
             Spacer()
+            if let onCancel {
+                Button(action: onCancel) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(SwiftBuddyTheme.textTertiary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Cancel download")
+            }
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
