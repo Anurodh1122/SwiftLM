@@ -122,6 +122,33 @@ jobs:
           print("patched", path)
           PY
 
+      # SSD expert streaming only read experts from disk on macOS: on iOS the shard lookup
+      # returned nil, so every layer fell back to its full expert stack (~430 MB for the
+      # 35B-A3B), loaded whole on first use, and the app ran out of memory after a few
+      # layers. pread() works the same in the iOS sandbox, so use it whenever streaming is on.
+      - name: Patch SSD expert streaming for iOS in mlx-swift-lm
+        run: |
+          python3 - <<'PY'
+          import sys
+          path = "mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift"
+          src = open(path, encoding="utf-8").read()
+
+          for old, new in [
+              ("#if os(macOS)", "#if true // patched: stream experts on iOS too"),
+              ("ExpertStreamingConfig.shared.useDirectNVMe", "ExpertStreamingConfig.shared.isEnabled"),
+          ]:
+              n = src.count(old)
+              if n == 3:
+                  src = src.replace(old, new)
+              elif n == 0 and "patched: stream experts on iOS" in src:
+                  print("already patched, skipping")
+              else:
+                  sys.exit(f"Expected 3 of {old!r} in {path}, found {n}; update the patch step.")
+
+          open(path, "w", encoding="utf-8").write(src)
+          print("patched", path)
+          PY
+
       - name: Build for iOS (unsigned)
         run: |
           # Plain `build` (not `archive`) with signing disabled yields an unsigned
