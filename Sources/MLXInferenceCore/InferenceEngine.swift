@@ -192,13 +192,14 @@ public final class InferenceEngine: ObservableObject {
     @Published public private(set) var generationOrigin: GenerationOrigin = .app
     /// Prompt chunk size while SSD expert streaming is active on iOS; nil otherwise.
     ///
-    /// mlx-swift-lm's streaming SwitchGLU keeps a small set of reused buffers for up to
-    /// 32 routed experts per layer (its single-token path). A larger batch — any prompt
-    /// chunk over `32 / experts_per_token` tokens — takes its prompt path instead, which
-    /// holds buffers for every routed expert of every layer until the pass ends. On an
-    /// 8 GB iPad (5 GB app ceiling) that killed the app on the first message to
-    /// Qwen3.6-35B-A3B. Prefilling in chunks that stay on the bounded path keeps memory
-    /// flat, at the cost of a slower prompt.
+    /// mlx-swift-lm's streaming SwitchGLU gives every layer its own permanent expert
+    /// buffers, one slot per routed expert in the batch: tokens per chunk × experts per
+    /// token. Batches over 32 routed experts take a prompt path that holds even more
+    /// until the pass ends. For Qwen3.6-35B-A3B (40 layers, 8 experts, 1.69 MB each) a
+    /// 512-token chunk took that path and a 4-token chunk still meant 32 slots, 2.1 GB of
+    /// buffers on top of 3.2 GB resident: over the 5 GB ceiling of an 8 GB iPad either
+    /// way, and iOS killed the app on the first message. One token per chunk sizes the
+    /// buffers like generation does (8 slots, 0.53 GB), at the cost of a slower prompt.
     private var streamingPrefillStepSize: Int?
 
     // All NotificationCenter observers collected for clean deregistration
@@ -546,10 +547,7 @@ public final class InferenceEngine: ObservableObject {
                     }()
                 )
                 #if os(iOS)
-                let modelConfig = explicitLocalDirectory.flatMap(ModelStorage.readModelConfig(inDirectory:))
-                    ?? ModelStorage.readModelConfig(for: modelId)
-                let expertsPerToken = modelConfig.flatMap(Self.expertsPerToken(in:)) ?? 8
-                streamingPrefillStepSize = max(1, 32 / max(expertsPerToken, 1))
+                streamingPrefillStepSize = 1
                 #endif
                 print("[InferenceEngine] SSD expert streaming: enabled (isMoE=\(isMoE), persisted=\(GenerationConfig.hasPersistedConfig), setting=\(generationConfig.streamExperts), prefill chunk=\(streamingPrefillStepSize.map { "\($0)" } ?? "default"))")
             } else {
@@ -730,12 +728,6 @@ public final class InferenceEngine: ObservableObject {
         let json = (try? JSONEncoder().encode(payload)).flatMap { String(data: $0, encoding: .utf8) }
             ?? #"{"name": "\#(call.function.name)"}"#
         return "<tool_call>\n\(json)\n</tool_call>"
-    }
-
-    /// `num_experts_per_tok` from a model config, top level or inside `text_config`.
-    private static func expertsPerToken(in config: [String: Any]) -> Int? {
-        if let value = config["num_experts_per_tok"] as? Int { return value }
-        return (config["text_config"] as? [String: Any])?["num_experts_per_tok"] as? Int
     }
 
     private func releaseLoadedModelResources() {

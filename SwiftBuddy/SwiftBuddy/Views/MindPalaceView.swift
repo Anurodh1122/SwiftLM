@@ -34,6 +34,9 @@ struct MindPalaceView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 40)
                 }
+                // Fill the screen so it centres: the ZStack aligns to the top-right corner
+                // (for the macOS close button), which is where this message ended up.
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 GeometryReader { proxy in
                     // Draw in graph coordinates, scaled and centred so the whole graph is
