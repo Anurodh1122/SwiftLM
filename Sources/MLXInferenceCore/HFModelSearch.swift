@@ -72,8 +72,8 @@ public struct HFModelResult: Identifiable, Sendable, Decodable {
 
     public var likesDisplay: String {
         guard let l = likes, l > 0 else { return "" }
-        if l >= 1_000 { return String(format: "%.0fk♥", Double(l) / 1_000) }
-        return "\(l)♥"
+        if l >= 1_000 { return String(format: "%.0fk likes", Double(l) / 1_000) }
+        return "\(l) likes"
     }
 }
 

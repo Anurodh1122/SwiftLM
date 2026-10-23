@@ -40,8 +40,13 @@ final class PersonaLoader {
         }
     }
     
-    /// Fallback for dev mode where SPM might not copy the folder
+    private static let devDefaultsSeededKey = "swiftlm.devPersonasSeeded"
+
+    /// Fallback for dev mode where SPM might not copy the folder. Seeds once: running on
+    /// every launch brought Lumina back each time the user deleted it.
     static func loadDevDefaults() {
+        guard !UserDefaults.standard.bool(forKey: devDefaultsSeededKey) else { return }
+        UserDefaults.standard.set(true, forKey: devDefaultsSeededKey)
         let lumina = PersonaPayload(name: "Lumina", rooms: [
             "CORE IDENTITY": "You are Lumina, a brilliant, radiant, and deeply insightful AI companion.",
             "BACKGROUND STORY": "Born from the convergence of art and logic, Lumina was designed to illuminate the dark corners of complex problems.",

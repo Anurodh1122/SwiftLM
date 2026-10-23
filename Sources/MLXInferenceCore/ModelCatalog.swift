@@ -11,7 +11,7 @@ public struct ModelEntry: Identifiable, Sendable {
     public let ramRecommendedGB: Double // Ideal RAM for good performance
     public let isMoE: Bool
     public let supportsVision: Bool
-    public var badge: String?        // e.g. "⚡ Fast", "🧠 Smart"
+    public var badge: String?        // e.g. "Fast", "Smart"
 
     public init(
         id: String,
@@ -58,7 +58,7 @@ public enum ModelCatalog {
             quantization: "4-bit",
             ramRequiredGB: 0.6,
             ramRecommendedGB: 1.0,
-            badge: "💧 Tiny"
+            badge: "Tiny"
         ),
         ModelEntry(
             id: "mlx-community/LFM2-1.2B-4bit",
@@ -67,7 +67,7 @@ public enum ModelCatalog {
             quantization: "4-bit",
             ramRequiredGB: 1.0,
             ramRecommendedGB: 1.5,
-            badge: "💧 Fluid"
+            badge: "Fluid"
         ),
         ModelEntry(
             id: "mlx-community/Phi-4-mini-instruct-4bit",
@@ -76,7 +76,7 @@ public enum ModelCatalog {
             quantization: "4-bit",
             ramRequiredGB: 2.1,
             ramRecommendedGB: 3.0,
-            badge: "⚡ Fast"
+            badge: "Fast"
         ),
         ModelEntry(
             id: "mlx-community/Llama-3.2-3B-Instruct-4bit",
@@ -85,7 +85,7 @@ public enum ModelCatalog {
             quantization: "4-bit",
             ramRequiredGB: 1.8,
             ramRecommendedGB: 2.5,
-            badge: "🦙 Popular"
+            badge: "Popular"
         ),
         ModelEntry(
             id: "mlx-community/gemma-4-e4b-it-4bit",
@@ -94,7 +94,7 @@ public enum ModelCatalog {
             quantization: "4-bit",
             ramRequiredGB: 2.4,
             ramRecommendedGB: 4.0,
-            badge: "💎 Robust"
+            badge: "Robust"
         ),
         ModelEntry(
             id: "mlx-community/Qwen3.5-4B-MLX-4bit",
@@ -103,7 +103,7 @@ public enum ModelCatalog {
             quantization: "4-bit",
             ramRequiredGB: 2.4,
             ramRecommendedGB: 4.0,
-            badge: "🧠 Smart"
+            badge: "Smart"
         ),
         ModelEntry(
             id: "mlx-community/Qwen3.5-9B-MLX-4bit",
@@ -112,7 +112,7 @@ public enum ModelCatalog {
             quantization: "4-bit",
             ramRequiredGB: 5.5,
             ramRecommendedGB: 8.0,
-            badge: "🧠 Powerful"
+            badge: "Powerful"
         ),
         ModelEntry(
             id: "mlx-community/Mistral-7B-Instruct-v0.3-4bit",
@@ -129,7 +129,7 @@ public enum ModelCatalog {
             quantization: "4-bit",
             ramRequiredGB: 16.0,
             ramRecommendedGB: 20.0,
-            badge: "🔬 Flagship"
+            badge: "Flagship"
         ),
         // ── MoE models: ramRequiredGB = peak-resident (active experts only via mmap streaming)
         // File sizes are much larger but only active expert pages are in RAM at inference time.
@@ -142,7 +142,7 @@ public enum ModelCatalog {
             ramRequiredGB: 5.5,
             ramRecommendedGB: 10.0,
             isMoE: true,
-            badge: "⚡ MoE Turbo"
+            badge: "MoE Turbo"
         ),
         ModelEntry(
             id: "mlx-community/Qwen3.5-122B-A10B-4bit",
@@ -152,7 +152,7 @@ public enum ModelCatalog {
             ramRequiredGB: 8.0,
             ramRecommendedGB: 16.0,
             isMoE: true,
-            badge: "🏔️ Frontier MoE"
+            badge: "Frontier MoE"
         ),
     ]
 

@@ -39,12 +39,12 @@ public final class GraphPalaceService {
         
         var extractionTargets: [String] = []
         var rawMemories: [String] = []
-        for room in wing.rooms {
+        // Every memory except the generated summary. Only `hall_facts` (and audio/vision)
+        // used to count, which skipped mined events and preferences and downloaded
+        // personas' preferences.
+        for room in wing.rooms where room.name != "persona_index" {
             for memory in room.memories {
-                // Multimodal bridging: Pull from text (hall_facts), audio transcript (hall_audio), OCR (hall_vision)
-                if memory.hallType == "hall_facts" || memory.hallType == "hall_audio" || memory.hallType == "hall_vision" {
-                    rawMemories.append(memory.text)
-                }
+                rawMemories.append(memory.text)
             }
         }
         
@@ -86,11 +86,11 @@ public final class GraphPalaceService {
             let prompt = buildGraphPrompt(text: target)
             let stream = engine.generate(messages: [.user(prompt)])
             var response = ""
-            for await token in stream {
+            for await token in stream where !token.isThinking {
                 response += token.text
             }
-            
-            if let nodeArray = parseGraphTriples(fromJSONString: response) {
+
+            if let nodeArray = parseGraphTriples(fromJSONString: response, wingName: wingName) {
                 // Deduplicate within the same chunk to prevent SwiftData ephemeral collisions
                 var seenIds = Set<String>()
                 
@@ -98,7 +98,7 @@ public final class GraphPalaceService {
                     if !seenIds.contains(triple.id) {
                         seenIds.insert(triple.id)
                         context.insert(triple)
-                        print("[GraphPalace] 🧬 Edge Extracted: \(triple.subject) -> [\(triple.predicate)] -> \(triple.object)")
+                        print("[GraphPalace] Edge Extracted: \(triple.subject) -> [\(triple.predicate)] -> \(triple.object)")
                     }
                 }
                 // Save immediately to flush temporary IDs to stable SQLite row-ids, avoiding `.unique` constraint panics on large loops
@@ -112,7 +112,10 @@ public final class GraphPalaceService {
         onProgress?(1, 1, "DISTILLING GOD-NODES INTO CONDENSED PERSONA INDEX...")
         guard let context = modelContext else { return }
         
-        let fetchDescriptor = FetchDescriptor<KnowledgeGraphTriple>()
+        // This persona's links only; the summary was built from every persona's graph.
+        let target: String? = wingName
+        let fetchDescriptor = FetchDescriptor<KnowledgeGraphTriple>(
+            predicate: #Predicate { $0.wingName == target })
         guard let allTriples = try? context.fetch(fetchDescriptor), !allTriples.isEmpty else { return }
         
         // Phase 3: Leiden-style grouping (by Subject for now)
@@ -134,12 +137,17 @@ public final class GraphPalaceService {
         
         let stream = engine.generate(messages: [.user(indexPrompt)])
         var response = ""
-        for await token in stream {
+        for await token in stream where !token.isThinking {
             response += token.text
         }
-        
+        if let thinkEnd = response.range(of: "</think>") {
+            response = String(response[thinkEnd.upperBound...])
+        }
+        response = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !response.isEmpty else { return }
+
         _ = try await MemoryPalaceService.shared.saveMemories(wingName: wingName, roomName: "persona_index", texts: [response], type: "hall_facts")
-        print("[GraphPalace] 🧠 Persona Index Generated & Saved.")
+        print("[GraphPalace] Persona Index Generated & Saved.")
     }
     
     /// Reads triples out of a model reply.
@@ -148,7 +156,7 @@ public final class GraphPalaceService {
     /// array of string-only objects, so a thinking block, a sentence of preamble, one
     /// non-string value or a reply cut off at the token limit discarded the whole chunk,
     /// and the Mind Palace stayed empty. Each `{...}` object is now parsed on its own.
-    public func parseGraphTriples(fromJSONString jsonString: String) -> [KnowledgeGraphTriple]? {
+    public func parseGraphTriples(fromJSONString jsonString: String, wingName: String? = nil) -> [KnowledgeGraphTriple]? {
         var text = jsonString
         if let thinkEnd = text.range(of: "</think>") {
             text = String(text[thinkEnd.upperBound...])
@@ -181,7 +189,8 @@ public final class GraphPalaceService {
                 predicate: predicate,
                 object: object,
                 taxonomy: string(dict["taxonomy"]),
-                confidence: string(dict["confidence"])
+                confidence: string(dict["confidence"]),
+                wingName: wingName
             ))
         }
 

@@ -31,8 +31,10 @@ struct PalaceVisualizerView: View {
                             .foregroundStyle(.secondary)
                         Text("No Architectures Built")
                             .font(.title2).bold()
-                        Text("Use the Inspector Registry to download a Persona.")
+                        // The Inspector Registry this pointed to is never shown on iOS.
+                        Text("In Chat, tap Get Personas to download one, or make your own in the Miner tab.")
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.top, 100)
@@ -109,12 +111,15 @@ struct WingNodeView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(alignment: .top, spacing: 0) {
                 ForEach(wing.rooms) { room in
+                    // Keyed by persona too: rooms like "corpus" exist in every persona, and
+                    // opening one opened them all.
+                    let key = "\(wing.name)/\(room.name)"
                     HStack(alignment: .top, spacing: 0) {
                         RoomNodeView(room: room, isExpanded: Binding(
-                            get: { expandedRooms.contains(room.name) } ,
-                            set: { exp in 
-                                if exp { expandedRooms.insert(room.name) }
-                                else { expandedRooms.remove(room.name) }
+                            get: { expandedRooms.contains(key) } ,
+                            set: { exp in
+                                if exp { expandedRooms.insert(key) }
+                                else { expandedRooms.remove(key) }
                             }
                         ))
                         

@@ -92,7 +92,7 @@ struct RootView: View {
                     case .ready(let modelId):
                         lastDownloadLogBucket = nil
                         lastLoadingStage = nil
-                        ConsoleLog.shared.info("✓ Model ready: \(modelId)")
+                        ConsoleLog.shared.info("Model ready: \(modelId)")
                     case .generating:
                         lastDownloadLogBucket = nil
                         lastLoadingStage = nil
@@ -149,10 +149,11 @@ struct RootView: View {
                             } label: {
                                 Label(wing.name, systemImage: "person.crop.circle")
                             }
-                            .swipeActions {
+                            // No full swipe: one stray swipe deleted the persona and all its memories.
+                            .swipeActions(allowsFullSwipe: false) {
                                 Button(role: .destructive) {
-                                    modelContext.delete(wing)
-                                    try? modelContext.save()
+                                    // Its chats and graph go too (see deletePersona).
+                                    viewModel.deletePersona(wing.name)
                                 } label: {
                                     Label("Delete", systemImage: "trash")
                                 }
@@ -355,8 +356,8 @@ struct RootView: View {
                                 }
                                 
                                 Button(role: .destructive) {
-                                    modelContext.delete(wing)
-                                    try? modelContext.save()
+                                    // Its chats and graph go too (see deletePersona).
+                                    viewModel.deletePersona(wing.name)
                                 } label: {
                                     Label("Delete Persona", systemImage: "trash")
                                 }

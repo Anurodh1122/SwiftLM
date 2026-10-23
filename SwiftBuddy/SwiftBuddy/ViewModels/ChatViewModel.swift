@@ -198,7 +198,11 @@ final class ChatViewModel: ObservableObject {
                     
                     // Execute tool natively!
                     do {
-                        let toolResult = try await MemoryPalaceTools.handleToolCall(name: toolCall.name, arguments: toolCall.parameters ?? [:])
+                        // Tools act on the open persona whatever wing the model names: a
+                        // misspelt name ("Albert Einstein" for "Einstein") created a new persona.
+                        var arguments = toolCall.parameters ?? [:]
+                        if let wing = currentWing { arguments["wing"] = wing }
+                        let toolResult = try await MemoryPalaceTools.handleToolCall(name: toolCall.name, arguments: arguments)
                         let msg = ChatMessage.tool(toolResult)
                         messages.append(msg)
                         latestMessages.append(msg)
@@ -388,6 +392,25 @@ final class ChatViewModel: ObservableObject {
         newConversation()
     }
 
+    /// Deletes a persona with its memories, chats and graph. If its chat is open, the core
+    /// chat takes its place rather than keeping a deleted session.
+    func deletePersona(_ name: String) {
+        if currentWing == name {
+            stopGeneration()
+            activeSession = nil
+            messages = []
+        }
+        do {
+            try MemoryPalaceService.shared.deletePersona(name)
+        } catch {
+            print("[Chat] couldn't delete persona \(name): \(error)")
+        }
+        if currentWing == name {
+            currentWing = nil
+            newConversation()
+        }
+    }
+
     /// Reopens an earlier chat from the history list.
     func openSession(_ session: ChatSession) {
         guard session.id != activeSession?.id else { return }
@@ -462,15 +485,17 @@ final class ChatViewModel: ObservableObject {
         
         if let wing = currentWing {
             do {
-                // L0: Identity (~50 tokens, Always loaded)
-                let l0Identity = try MemoryPalaceService.shared.fetchRoomContents(wingName: wing, roomName: "background")
-                
-                // L1: Critical facts - team, projects, preferences (~120 tokens, Always loaded)
-                let prefs = try MemoryPalaceService.shared.fetchRoomContents(wingName: wing, roomName: "preferences")
-                let facts = try MemoryPalaceService.shared.fetchRoomContents(wingName: wing, roomName: "corpus")
-                
-                let l1Facts = prefs + facts
-                
+                // L0: identity and L1: critical facts, always loaded. Rooms are matched
+                // loosely (see `identityContext`); exact names matched no persona.
+                let persona = try MemoryPalaceService.shared.identityContext(wingName: wing)
+                var l0Identity: [String] = []
+                var l0Length = 0
+                for line in persona.identity where l0Length + line.count <= 1500 {
+                    l0Identity.append(line)
+                    l0Length += line.count
+                }
+                let l1Facts = persona.facts
+
                 // Truncate L1 payload to ~120 tokens (approx 500 chars) to prevent prompt bloat 
                 // matching the AAAK MemPalace layers.py spec
                 var l1Text = ""

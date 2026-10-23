@@ -13,6 +13,8 @@ struct MindPalaceView: View {
     @State private var draggedNodeId: String? = nil
     @State private var simulationSteps = 0
     @State private var dragFit: GraphFit? = nil
+    /// The persona whose graph is shown; nil shows every persona's.
+    @State private var selectedWing: String? = nil
     
     // Timer
     private let timer = Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()
@@ -21,7 +23,7 @@ struct MindPalaceView: View {
         ZStack(alignment: .topTrailing) {
             SwiftBuddyTheme.background.ignoresSafeArea()
             
-            if triples.isEmpty {
+            if visibleTriples.isEmpty {
                 VStack(spacing: 20) {
                     Image(systemName: "network")
                         .font(.system(size: 60))
@@ -132,6 +134,25 @@ struct MindPalaceView: View {
         .onChange(of: triples.count) { _, _ in
             initializeGraph() // Re-init if new edges arrive!
         }
+        .onChange(of: selectedWing) { _, _ in
+            initializeGraph()
+        }
+        .toolbar {
+            // Graphs are per persona now; every persona's in one picture was unreadable.
+            if graphWings.count > 1 {
+                ToolbarItem {
+                    Menu {
+                        Button("All Personas") { selectedWing = nil }
+                        Divider()
+                        ForEach(graphWings, id: \.self) { wing in
+                            Button(wing) { selectedWing = wing }
+                        }
+                    } label: {
+                        Label(selectedWing ?? "All Personas", systemImage: "person.crop.circle")
+                    }
+                }
+            }
+        }
         #if os(macOS)
         .navigationTitle("Mind Palace")
         #endif
@@ -139,11 +160,24 @@ struct MindPalaceView: View {
     
     // MARK: - Simulation Engine
     
+    /// Personas that have a graph, with links made before graphs were per persona under
+    /// their own name.
+    private var graphWings: [String] {
+        Array(Set(triples.map { $0.wingName ?? Self.unassignedLabel })).sorted()
+    }
+
+    private static let unassignedLabel = "Earlier links"
+
+    private var visibleTriples: [KnowledgeGraphTriple] {
+        guard let selectedWing else { return triples }
+        return triples.filter { ($0.wingName ?? Self.unassignedLabel) == selectedWing }
+    }
+
     private func initializeGraph() {
         var newNodes: [String: ForceNode] = [:]
         var newEdges: [ForceEdge] = []
-        
-        for triple in triples {
+
+        for triple in visibleTriples {
             let sId = triple.subject.lowercased()
             let oId = triple.object.lowercased()
             

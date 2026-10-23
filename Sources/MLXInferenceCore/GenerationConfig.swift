@@ -44,7 +44,7 @@ public struct GenerationConfig: Sendable, Codable {
     /// Enable SSD expert streaming for MoE (and any large) models.
     /// When true, expert weights are mmap'd from NVMe and only active
     /// expert pages reside in RAM during inference (Flash-MoE style).
-    /// ⚠️ LOAD-TIME flag: changes take effect on the next model load.
+    /// LOAD-TIME flag: changes take effect on the next model load.
     /// MoE models (isMoE == true) default to true automatically;
     /// this flag lets users override that for non-catalog models or
     /// force-disable streaming even on MoE models.
@@ -57,7 +57,7 @@ public struct GenerationConfig: Sendable, Codable {
     /// Requires a checkpoint that retains `mtp.*` weights (set SWIFTLM_MTP_ENABLE=1
     /// at model-load time). No-ops gracefully if the model does not conform to
     /// `MTPLanguageModel`.
-    /// ⚠️ LOAD-TIME flag: changes take effect on the next model load.
+    /// LOAD-TIME flag: changes take effect on the next model load.
     public var enableMTP: Bool
 
     /// Number of tokens the MTP heads draft per speculation round (default 1).

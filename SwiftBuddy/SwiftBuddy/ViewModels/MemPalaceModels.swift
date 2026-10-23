@@ -57,15 +57,25 @@ public final class KnowledgeGraphTriple {
     public var dateObserved: Date
     public var taxonomy: String?
     public var confidence: String?
-    
-    init(subject: String, predicate: String, object: String, dateObserved: Date = Date(), taxonomy: String? = nil, confidence: String? = nil) {
-        self.id = "\(subject.lowercased())_\(predicate.lowercased())" // Enforce temporal overwrite (one predicate per subject)
+    /// The persona this link belongs to; nil for links made before graphs were per persona.
+    public var wingName: String?
+
+    init(subject: String, predicate: String, object: String, dateObserved: Date = Date(), taxonomy: String? = nil, confidence: String? = nil, wingName: String? = nil) {
+        self.id = Self.makeID(subject: subject, predicate: predicate, wingName: wingName)
+        self.wingName = wingName
         self.subject = subject
         self.predicate = predicate
         self.object = object
         self.dateObserved = dateObserved
         self.taxonomy = taxonomy
         self.confidence = confidence
+    }
+
+    /// One predicate per subject (temporal overwrite), within a persona: shared ids let one
+    /// persona's graph overwrite another's.
+    static func makeID(subject: String, predicate: String, wingName: String?) -> String {
+        let key = "\(subject.lowercased())_\(predicate.lowercased())"
+        return wingName.map { "\($0.lowercased())|\(key)" } ?? key
     }
 }
 

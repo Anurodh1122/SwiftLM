@@ -225,8 +225,8 @@ public struct MemoryPalaceTools {
             guard let wing = arguments["wing"] as? String,
                   let fact = arguments["fact"] as? String else { return "Error: Missing required arguments." }
             let roomName = arguments["room"] as? String
-            try MemoryPalaceService.shared.deleteMemory(wingName: wing, roomName: roomName, textMatch: fact)
-            return "Attempted to delete memory matching fact."
+            let deleted = try MemoryPalaceService.shared.deleteMemory(wingName: wing, roomName: roomName, textMatch: fact)
+            return deleted ? "Deleted the matching memory." : "No memory closely matched; nothing was deleted."
             
         case "mempalace_status":
             let stats = try MemoryPalaceService.shared.getPalaceStatus()
@@ -244,12 +244,14 @@ public struct MemoryPalaceTools {
             guard let subject = arguments["subject"] as? String,
                   let predicate = arguments["predicate"] as? String,
                   let object = arguments["object"] as? String else { return "Error: Missing KG triple arguments" }
-            try MemoryPalaceService.shared.addTriple(subject: subject, predicate: predicate, object: object)
+            try MemoryPalaceService.shared.addTriple(
+                subject: subject, predicate: predicate, object: object,
+                wingName: arguments["wing"] as? String)
             return "Knowledge Graph Triple Saved: [\(subject)] - \(predicate) -> [\(object)]"
             
         case "mempalace_kg_query":
             guard let entity = arguments["entity"] as? String else { return "Error: Missing entity argument" }
-            let triples = try MemoryPalaceService.shared.queryEntity(entity)
+            let triples = try MemoryPalaceService.shared.queryEntity(entity, wingName: arguments["wing"] as? String)
             if triples.isEmpty { return "No knowledge properties found for entity: \(entity)" }
             let lines = triples.map { "- \($0.predicate): \($0.object)" }
             return "Entity: \(entity)\n" + lines.joined(separator: "\n")

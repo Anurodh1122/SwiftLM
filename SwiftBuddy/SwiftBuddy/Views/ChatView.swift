@@ -535,10 +535,12 @@ struct ChatView: View {
         // Persona map selector
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                Button("No Persona") { viewModel.currentWing = nil }
+                // Open that persona's own chat. Setting only the persona kept the
+                // current chat's messages on screen under a different prompt.
+                Button("No Persona") { viewModel.openConversation(wing: nil) }
                 Divider()
                 ForEach(wings) { wing in
-                    Button(wing.name) { viewModel.currentWing = wing.name }
+                    Button(wing.name) { viewModel.openConversation(wing: wing.name) }
                 }
             } label: {
                 Image(systemName: viewModel.currentWing == nil ? "brain" : "brain.head.profile")

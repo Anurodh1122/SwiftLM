@@ -197,20 +197,25 @@ final class MemoryPalaceService {
         
         let stream = engine.generate(messages: [.user(prompt)])
         var response = ""
-        for await token in stream {
+        for await token in stream where !token.isThinking {
             response += token.text
         }
-        
+        if let thinkEnd = response.range(of: "</think>") {
+            response = String(response[thinkEnd.upperBound...])
+        }
+        let summary = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !summary.isEmpty else { return }
+
         // 3. Save to Palace
-        try saveMemory(wingName: wingName, roomName: "persona_index", text: response.trimmingCharacters(in: .whitespacesAndNewlines), type: "hall_facts")
-        print("[MemoryPalace] 🧠 Vector-Driven Persona Index Generated & Saved.")
+        try saveMemory(wingName: wingName, roomName: "persona_index", text: summary, type: "hall_facts")
+        print("[MemoryPalace] Vector-Driven Persona Index Generated & Saved.")
     }
 #endif
     
     func searchMemories(query: String, wingName: String, roomName: String? = nil, hallType: String? = nil, topK: Int = 5) throws -> [MemoryEntry] {
         guard let context = modelContext else { throw URLError(.badServerResponse) }
-        guard let queryVector = generateEmbedding(for: query) else { return [] }
-        
+        let queryVector = generateEmbedding(for: query)
+
         let fetchWing = FetchDescriptor<PalaceWing>(predicate: #Predicate { $0.name == wingName })
         guard let wing = try context.fetch(fetchWing).first else { return [] }
         
@@ -218,28 +223,76 @@ final class MemoryPalaceService {
         if let r = roomName { allMemories = allMemories.filter { $0.room?.name == r } }
         if let h = hallType { allMemories = allMemories.filter { $0.hallType == h } }
         
-        return sortAndSliceMemories(allMemories, queryVector: queryVector, topK: topK)
+        return sortAndSliceMemories(allMemories, query: query, queryVector: queryVector, topK: topK)
     }
-    
+
     func searchAllMemories(query: String, topK: Int = 5) throws -> [MemoryEntry] {
         guard let context = modelContext else { throw URLError(.badServerResponse) }
-        guard let queryVector = generateEmbedding(for: query) else { return [] }
-        
+        let queryVector = generateEmbedding(for: query)
+
         let fetchDesc = FetchDescriptor<MemoryEntry>()
         let allMemories = try context.fetch(fetchDesc)
-        return sortAndSliceMemories(allMemories, queryVector: queryVector, topK: topK)
+        return sortAndSliceMemories(allMemories, query: query, queryVector: queryVector, topK: topK)
     }
-    
-    private func sortAndSliceMemories(_ memories: [MemoryEntry], queryVector: [Double], topK: Int) -> [MemoryEntry] {
+
+    /// Ranks by embedding similarity where both sides have a vector, and otherwise by the
+    /// share of the query's words the memory contains. Search used to need the on-device
+    /// sentence embedding for everything, so without it every lookup came back empty.
+    private func sortAndSliceMemories(_ memories: [MemoryEntry], query: String, queryVector: [Double]?, topK: Int) -> [MemoryEntry] {
+        let words = Set(query.lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count > 2 })
         var scored: [(entry: MemoryEntry, score: Double)] = []
         for mem in memories {
-            if let emb = mem.embedding {
-                let score = cosineSimilarity(a: queryVector, b: emb)
-                scored.append((mem, score))
+            if let queryVector, let emb = mem.embedding {
+                scored.append((mem, cosineSimilarity(a: queryVector, b: emb)))
+            } else if !words.isEmpty {
+                let text = mem.text.lowercased()
+                let hits = words.filter { text.contains($0) }.count
+                if hits > 0 {
+                    scored.append((mem, Double(hits) / Double(words.count)))
+                }
             }
         }
         scored.sort { $0.score > $1.score }
         return scored.prefix(topK).map { $0.entry }
+    }
+
+    /// What a persona chat starts from: who the persona is, and its key facts.
+    ///
+    /// Matched on room names loosely. The chat looked for rooms named exactly "background",
+    /// "preferences" and "corpus", but downloaded personas save "BACKGROUND STORY",
+    /// "CORE IDENTITY", "CORPUS" and "PREFERENCES", and mined ones use whatever rooms the
+    /// model picks, so no persona's identity reached the model. With no matching rooms the
+    /// newest memories stand in.
+    func identityContext(wingName: String) throws -> (identity: [String], facts: [String]) {
+        guard let context = modelContext else { throw URLError(.badServerResponse) }
+        let fetchWing = FetchDescriptor<PalaceWing>(predicate: #Predicate { $0.name == wingName })
+        guard let wing = try context.fetch(fetchWing).first else { return ([], []) }
+
+        func newestFirst(_ room: PalaceRoom) -> [String] {
+            room.memories.sorted { $0.dateAdded > $1.dateAdded }.map(\.text)
+        }
+        var identity: [String] = []
+        var facts: [String] = []
+        for room in wing.rooms {
+            let name = room.name.lowercased()
+            if name == "persona_index" {
+                // Synthesis adds a new summary each run; only the latest counts.
+                identity.insert(contentsOf: newestFirst(room).prefix(1), at: 0)
+            } else if ["identity", "background", "tone", "personality", "persona"].contains(where: { name.contains($0) }) {
+                identity += newestFirst(room)
+            } else if ["preference", "corpus", "fact"].contains(where: { name.contains($0) }) {
+                facts += newestFirst(room)
+            }
+        }
+        if identity.isEmpty && facts.isEmpty {
+            facts = wing.rooms.filter { $0.name != "diary" }
+                .flatMap(\.memories)
+                .sorted { $0.dateAdded > $1.dateAdded }
+                .map(\.text)
+        }
+        return (identity, facts)
     }
     
     func findTunnels(roomName: String) throws -> [String] {
@@ -284,13 +337,53 @@ final class MemoryPalaceService {
         }
     }
     
-    func deleteMemory(wingName: String, roomName: String?, textMatch: String) throws {
-        // Find closest match > 0.85 and delete it
-        let matches = try searchMemories(query: textMatch, wingName: wingName, roomName: roomName, topK: 1)
-        if let mem = matches.first, let context = modelContext {
-            context.delete(mem)
-            try context.save()
+    /// Deletes a persona with everything that belongs to it: its rooms and memories
+    /// (cascade), its chats and its graph. Deleting only the wing left the chats and the
+    /// Mind Palace links behind.
+    func deletePersona(_ name: String) throws {
+        guard let context = modelContext else { throw URLError(.badServerResponse) }
+        let target: String? = name
+        for wing in try context.fetch(FetchDescriptor<PalaceWing>(predicate: #Predicate { $0.name == name })) {
+            context.delete(wing)
         }
+        for session in try context.fetch(FetchDescriptor<ChatSession>(predicate: #Predicate { $0.wingName == target })) {
+            context.delete(session)
+        }
+        for triple in try context.fetch(FetchDescriptor<KnowledgeGraphTriple>(predicate: #Predicate { $0.wingName == target })) {
+            context.delete(triple)
+        }
+        try context.save()
+    }
+
+    /// Deletes the memory matching `textMatch`: one containing the text, or failing that one
+    /// at least 0.85 similar. It used to delete the top search hit however unrelated.
+    @discardableResult
+    func deleteMemory(wingName: String, roomName: String?, textMatch: String) throws -> Bool {
+        guard let context = modelContext else { throw URLError(.badServerResponse) }
+        let fetchWing = FetchDescriptor<PalaceWing>(predicate: #Predicate { $0.name == wingName })
+        guard let wing = try context.fetch(fetchWing).first else { return false }
+        let candidates = wing.rooms
+            .filter { roomName == nil || $0.name == roomName }
+            .flatMap(\.memories)
+
+        let needle = textMatch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        var match: MemoryEntry? = nil
+        if !needle.isEmpty {
+            match = candidates.first(where: { $0.text.lowercased().contains(needle) })
+        }
+        if match == nil, let vector = generateEmbedding(for: textMatch) {
+            var best: (entry: MemoryEntry, score: Double)? = nil
+            for mem in candidates {
+                guard let emb = mem.embedding else { continue }
+                let score = cosineSimilarity(a: vector, b: emb)
+                if score >= 0.85, score > (best?.score ?? 0) { best = (mem, score) }
+            }
+            match = best?.entry
+        }
+        guard let match else { return false }
+        context.delete(match)
+        try context.save()
+        return true
     }
     
     // MARK: - Taxonomy & Status
@@ -348,10 +441,10 @@ final class MemoryPalaceService {
     // MARK: - Tier 5: Temporal Knowledge Graph
     
     @discardableResult
-    func addTriple(subject: String, predicate: String, object: String) throws -> Bool {
+    func addTriple(subject: String, predicate: String, object: String, wingName: String? = nil) throws -> Bool {
         guard let context = modelContext else { throw URLError(.badServerResponse) }
-        
-        let targetId = "\(subject.lowercased())_\(predicate.lowercased())"
+
+        let targetId = KnowledgeGraphTriple.makeID(subject: subject, predicate: predicate, wingName: wingName)
         let fetchDesc = FetchDescriptor<KnowledgeGraphTriple>(predicate: #Predicate { $0.id == targetId })
         
         if let existing = try context.fetch(fetchDesc).first {
@@ -365,7 +458,7 @@ final class MemoryPalaceService {
             }
             existing.dateObserved = Date()
         } else {
-            let triple = KnowledgeGraphTriple(subject: subject, predicate: predicate, object: object)
+            let triple = KnowledgeGraphTriple(subject: subject, predicate: predicate, object: object, wingName: wingName)
             context.insert(triple)
         }
         
@@ -373,14 +466,16 @@ final class MemoryPalaceService {
         return true
     }
     
-    func queryEntity(_ subject: String) throws -> [KnowledgeGraphTriple] {
+    func queryEntity(_ subject: String, wingName: String? = nil) throws -> [KnowledgeGraphTriple] {
         guard let context = modelContext else { throw URLError(.badServerResponse) }
         let targetSubj = subject.lowercased()
         let fetchDesc = FetchDescriptor<KnowledgeGraphTriple>()
-        
+
         // Cannot use lowercased() easily in SwiftData predicates sometimes, so fetch & filter natively for stability
         let allTriples = try context.fetch(fetchDesc)
-        return allTriples.filter { $0.subject.lowercased() == targetSubj }
+        return allTriples.filter {
+            $0.subject.lowercased() == targetSubj && (wingName == nil || $0.wingName == wingName)
+        }
     }
     
     // MARK: - Tier 6: Advanced Support
