@@ -46,13 +46,17 @@ final class MemoryPalaceService {
     @discardableResult
     func saveMemory(wingName: String, roomName: String, text: String, type: String = "Facts") throws -> Bool {
         guard let context = modelContext else { throw URLError(.badServerResponse) }
-        guard let vector = generateEmbedding(for: text) else { return false }
-        
+        // Without the on-device sentence embedding the fact used to be dropped silently, so
+        // mining reported success and no persona appeared. Keep it: it still belongs to the
+        // persona and feeds graph synthesis, though similarity search can't rank it.
+        let vector = generateEmbedding(for: text)
+
         // 1. Semantic Duplicate Guard
         let fetchDesc = FetchDescriptor<MemoryEntry>()
         let existingMemories = try context.fetch(fetchDesc).filter { $0.room?.name == roomName && $0.room?.wing?.name == wingName }
         for mem in existingMemories {
-            if let emb = mem.embedding {
+            if mem.text == text { return false }
+            if let vector, let emb = mem.embedding {
                 let similarity = cosineSimilarity(a: vector, b: emb)
                 if similarity > 0.95 {
                     return false // Duplicate blocked
@@ -113,20 +117,23 @@ final class MemoryPalaceService {
         for (index, text) in texts.enumerated() {
             onProgress?(index + 1, texts.count, text)
             await Task.yield()
-            guard let vector = generateEmbedding(for: text) else { continue }
-            
+            // Kept without an embedding when none is available (see `saveMemory`).
+            let vector = generateEmbedding(for: text)
+
             var isDuplicate = false
-            for emb in existingVectors {
-                if cosineSimilarity(a: vector, b: emb) > 0.95 {
-                    isDuplicate = true
-                    break
+            if let vector {
+                for emb in existingVectors {
+                    if cosineSimilarity(a: vector, b: emb) > 0.95 {
+                        isDuplicate = true
+                        break
+                    }
                 }
             }
             if isDuplicate { continue }
-            
+
             let entry = MemoryEntry(text: text, hallType: type, embedding: vector, room: room)
             context.insert(entry)
-            existingVectors.append(vector)
+            if let vector { existingVectors.append(vector) }
             savedCount += 1
         }
         

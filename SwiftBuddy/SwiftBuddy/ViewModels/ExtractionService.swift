@@ -91,6 +91,16 @@ public final class ExtractionService: ObservableObject {
     /// then persists it into the targeted Wing via SwiftData.
     public func mine(textBlock: String, wing: String, engine: InferenceEngine) async {
         guard !isMining else { return }
+        let wing = wing.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !wing.isEmpty else {
+            lastLog = "Give the persona a name first."
+            return
+        }
+        // Generating without a model yields nothing, which used to end in a JSON error.
+        guard engine.state.canSend else {
+            lastLog = "Load a model first, then extract."
+            return
+        }
         isMining = true
         lastLog = "Starting Extraction for Wing: \(wing)..."
         
@@ -126,38 +136,101 @@ public final class ExtractionService: ObservableObject {
         lastLog = "Generating JSON Extractions..."
         
         let stream = engine.generate(messages: messages)
-        for await token in stream {
+        for await token in stream where !token.isThinking {
             jsonBuffer += token.text
         }
-        
+        // A reasoning model can still write its thoughts inline; their braces broke parsing.
+        if let end = jsonBuffer.range(of: "</think>") {
+            jsonBuffer = String(jsonBuffer[end.upperBound...])
+        }
+        print("[Miner] reply: \(jsonBuffer.count) chars")
+
         lastLog = "Engine finished. Parsing output..."
-        
-        // Clean markdown backticks if model generated them
-        let cleanedJSON = JSONSanitizer.cleanJSON(jsonBuffer)
-        
-        guard let data = cleanedJSON.data(using: .utf8) else {
-            lastLog = "Error: Model returned unparsable string characters."
-            isMining = false
-            return
-        }
-        
-        do {
-            let payload = try JSONDecoder().decode(ExtractionPayload.self, from: data)
-            for item in payload.extractions {
-                try MemoryPalaceService.shared.saveMemory(
-                    wingName: wing,
-                    roomName: item.room,
-                    text: item.fact,
-                    type: item.hall
-                )
+
+        var facts = Self.parseExtractions(jsonBuffer)
+        print("[Miner] parsed \(facts.count) facts")
+        // Nothing usable came back (or a reply cut off mid-JSON): keep the text itself, so
+        // the persona still exists and knows what was pasted.
+        let keptRawText = facts.isEmpty
+        if keptRawText {
+            facts = TextCombiner.chunkText(textBlock, chunkSize: 800, chunkOverlap: 100, minChunkSize: 20)
+                .map { ExtractedMemory(room: "corpus", hall: "hall_facts", fact: $0) }
+            if facts.isEmpty {
+                facts = [ExtractedMemory(room: "corpus", hall: "hall_facts", fact: textBlock)]
             }
-            lastLog = "Success! Injected \(payload.extractions.count) facts into the Palace."
-        } catch {
-            lastLog = "JSON Decode Error: \(error.localizedDescription)\nRaw:\n\(cleanedJSON.prefix(100))..."
-            print("Failed to decode extracted memory: \(error)")
         }
-        
+
+        var saved = 0
+        for item in facts {
+            do {
+                if try MemoryPalaceService.shared.saveMemory(
+                    wingName: wing, roomName: item.room, text: item.fact, type: item.hall)
+                {
+                    saved += 1
+                }
+            } catch {
+                print("[Miner] save failed: \(error)")
+            }
+        }
+        print("[Miner] saved \(saved) of \(facts.count) into \(wing)")
+        if saved == 0 {
+            lastLog = "Nothing new to save for \(wing): these facts are already in its memory."
+        } else if keptRawText {
+            lastLog = "Saved the text to \(wing) as-is (\(saved) part\(saved == 1 ? "" : "s")); the model didn't return facts. Find it under Chat → Friends."
+        } else {
+            lastLog = "Saved \(saved) fact\(saved == 1 ? "" : "s") to \(wing). Find it under Chat → Friends."
+        }
+
         isMining = false
+    }
+
+    /// Facts from a model reply. Takes the whole `{"extractions": [...]}` payload when it
+    /// parses, otherwise every `{...}` object that has a `fact`, so one malformed or cut-off
+    /// entry no longer loses the rest. `room` and `hall` default when missing.
+    static func parseExtractions(_ reply: String) -> [ExtractedMemory] {
+        let cleaned = JSONSanitizer.cleanJSON(reply)
+        if let data = cleaned.data(using: .utf8),
+           let payload = try? JSONDecoder().decode(ExtractionPayload.self, from: data),
+           !payload.extractions.isEmpty {
+            return payload.extractions
+        }
+
+        var facts: [ExtractedMemory] = []
+        var depth = 0
+        var start: String.Index?
+        var inString = false
+        var escaped = false
+        for index in reply.indices {
+            let ch = reply[index]
+            if inString {
+                if escaped { escaped = false }
+                else if ch == "\\" { escaped = true }
+                else if ch == "\"" { inString = false }
+                continue
+            }
+            switch ch {
+            case "\"": inString = true
+            case "{":
+                depth += 1
+                start = index
+            case "}":
+                if let s = start, depth > 0 {
+                    let object = String(reply[s...index])
+                    if let data = object.data(using: .utf8),
+                       let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let fact = (dict["fact"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !fact.isEmpty {
+                        let room = (dict["room"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "corpus"
+                        let hall = (dict["hall"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "hall_facts"
+                        facts.append(ExtractedMemory(room: room, hall: hall, fact: fact))
+                    }
+                    start = nil
+                }
+                depth = max(0, depth - 1)
+            default: break
+            }
+        }
+        return facts
     }
     
     // Feature 3: Extract tool call block from LLM stream
