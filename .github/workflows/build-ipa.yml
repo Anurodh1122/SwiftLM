@@ -78,6 +78,50 @@ jobs:
           print("patched", path)
           PY
 
+      # With SSD expert streaming on, loadWeights reads the checkpoint through
+      # loadModelCheckpointLazily, which ignores the namespaces of components left to
+      # load on first use. A vision checkpoint (e.g. Qwen3.6-35B-A3B with vision_config)
+      # then hands the vision_tower tensors to a model whose vision module was removed
+      # for on-demand loading, and the load fails with "Unable to set vision_tower ...
+      # none not compatible". Apply the same exclusions the eager loader already applies.
+      - name: Patch lazy checkpoint loading in mlx-swift-lm
+        run: |
+          python3 - <<'PY'
+          import sys
+          path = "mlx-swift-lm/Libraries/MLXLMCommon/Load.swift"
+          src = open(path, encoding="utf-8").read()
+
+          patches = [
+              (
+                  "private func loadModelCheckpointLazily(urls: [URL]) throws -> ModelCheckpoint {\n",
+                  "private func loadModelCheckpointLazily(\n"
+                  "    urls: [URL], excludedNamespaces: [String] = []\n"
+                  ") throws -> ModelCheckpoint {\n"
+                  "    let exclusions = CheckpointNameMapping(excludedNamespaces.map { .excludePrefix($0) })\n",
+              ),
+              (
+                  "        let (fileWeights, metadata) = try loadArraysAndMetadata(url: url)\n",
+                  "        let (allFileWeights, metadata) = try loadArraysAndMetadata(url: url)\n"
+                  "        let fileWeights = allFileWeights.filter { exclusions.mapName($0.key) != nil }\n",
+              ),
+              (
+                  "        ? try loadModelCheckpointLazily(urls: loadURLs)\n",
+                  "        ? try loadModelCheckpointLazily(urls: loadURLs, excludedNamespaces: excludedNamespaces)\n",
+              ),
+          ]
+
+          for old, new in patches:
+              if src.count(old) == 1:
+                  src = src.replace(old, new, 1)
+              elif new in src:
+                  print("already patched, skipping")
+              else:
+                  sys.exit("Expected code not found in " + path + "; update the patch step.")
+
+          open(path, "w", encoding="utf-8").write(src)
+          print("patched", path)
+          PY
+
       - name: Build for iOS (unsigned)
         run: |
           # Plain `build` (not `archive`) with signing disabled yields an unsigned
