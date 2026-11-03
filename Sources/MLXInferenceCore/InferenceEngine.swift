@@ -611,8 +611,12 @@ public final class InferenceEngine: ObservableObject {
 
             // llm-mesh: apply the configured pipeline slice (e.g. "0:14") before weights load.
             // Unset/invalid = full model, i.e. the app behaves exactly as before.
-            PipelineSliceConfig.shared.range = UserDefaults.standard.string(forKey: "mesh.layerRange")
-                .flatMap { PipelineSliceConfig.parse($0) }
+            // The slice applies only to the model it was set for (empty = any model).
+            let sliceModel = UserDefaults.standard.string(forKey: "mesh.layerModel") ?? ""
+            PipelineSliceConfig.shared.range = (sliceModel.isEmpty || sliceModel == modelId)
+                ? UserDefaults.standard.string(forKey: "mesh.layerRange")
+                    .flatMap { PipelineSliceConfig.parse($0) }
+                : nil
             meshStateShared.reset()
 
             let loadedContainer: ModelContainer
@@ -1324,8 +1328,9 @@ extension InferenceEngine {
     }
 
     /// Persist the layer slice ("a:b", or "" for the full model); applied at next model load.
-    public func setMeshLayerRange(_ spec: String) {
+    public func setMeshLayerRange(_ spec: String, model: String = "") {
         UserDefaults.standard.set(spec, forKey: "mesh.layerRange")
+        UserDefaults.standard.set(model, forKey: "mesh.layerModel")
     }
     public var meshLayerRange: String { UserDefaults.standard.string(forKey: "mesh.layerRange") ?? "" }
 

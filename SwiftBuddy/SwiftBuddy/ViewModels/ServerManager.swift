@@ -171,7 +171,7 @@ final class ServerManager: ObservableObject {
                 router.post("/v1/mesh/slice") { request, _ -> Response in
                     let buf = try await request.body.collect(upTo: 4096)
                     let obj = (try? JSONSerialization.jsonObject(with: Data(buf.readableBytesView))) as? [String: Any]
-                    if let r = obj?["range"] as? String { await engine.setMeshLayerRange(r) }
+                    if let r = obj?["range"] as? String { await engine.setMeshLayerRange(r, model: obj?["model"] as? String ?? "") }
                     let cur = await engine.meshLayerRange
                     return Response(status: .ok, headers: swiftBuddyJSONHeaders, body: .init(byteBuffer: ByteBuffer(
                         string: "{\"range\":\(swiftBuddyJSONString(cur)),\"note\":\"applies at next model load\"}")))
