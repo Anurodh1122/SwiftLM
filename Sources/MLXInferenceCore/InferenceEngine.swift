@@ -18,6 +18,9 @@ import os
 /// llm-mesh: per-session KV caches for the layers this process owns.
 private final class MeshState: @unchecked Sendable {
     var caches: [String: [KVCache]] = [:]
+    /// True when the current model was loaded through the vision loader, which has no
+    /// token-level forward the mesh can call.
+    var loadedAsVision = false
     func reset() { caches.removeAll() }
 }
 private let meshStateShared = MeshState()
@@ -621,7 +624,10 @@ public final class InferenceEngine: ObservableObject {
 
             let loadedContainer: ModelContainer
             // A pipeline slice is text-only: the mesh patch lives in the LLM model classes.
-            if architecture.supportsVision && PipelineSliceConfig.shared.range == nil {
+            // Mesh mode (a slice, or the mesh model with the full range) always loads text-only.
+            let meshTextOnly = PipelineSliceConfig.shared.range != nil || (!sliceModel.isEmpty && sliceModel == modelId)
+            meshStateShared.loadedAsVision = architecture.supportsVision && !meshTextOnly
+            if architecture.supportsVision && !meshTextOnly {
                 loadedContainer = try await VLMModelFactory.shared.loadContainer(
                     from: downloader,
                     using: TransformersTokenizerLoader(),
@@ -1281,6 +1287,9 @@ extension InferenceEngine {
     ) async throws -> MeshForwardResult {
         guard let container else { throw MeshError.noModel }
         let state = meshStateShared
+        if state.loadedAsVision {
+            throw MeshError.badInput("model was loaded with the vision loader; set a mesh slice for this model id (POST /v1/mesh/slice with \"model\"; empty range = full model) and reload it")
+        }
         return try await container.perform { ctx in
             // Validate against this process's stage before touching MLX (a wrong-shaped
             // input would otherwise trap inside the model instead of returning an error).
