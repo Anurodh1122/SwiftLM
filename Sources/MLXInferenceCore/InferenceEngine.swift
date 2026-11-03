@@ -620,7 +620,8 @@ public final class InferenceEngine: ObservableObject {
             meshStateShared.reset()
 
             let loadedContainer: ModelContainer
-            if architecture.supportsVision {
+            // A pipeline slice is text-only: the mesh patch lives in the LLM model classes.
+            if architecture.supportsVision && PipelineSliceConfig.shared.range == nil {
                 loadedContainer = try await VLMModelFactory.shared.loadContainer(
                     from: downloader,
                     using: TransformersTokenizerLoader(),
