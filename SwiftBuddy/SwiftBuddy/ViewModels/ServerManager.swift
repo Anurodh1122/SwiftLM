@@ -166,6 +166,49 @@ final class ServerManager: ObservableObject {
                                     body: .init(byteBuffer: ByteBuffer(string: body)))
                 }
 
+                // ── llm-mesh: pipeline stage endpoints ─────────────────
+                // POST /v1/mesh/slice  {"range":"0:14"}  (""=full model; applies at next model load)
+                router.post("/v1/mesh/slice") { request, _ -> Response in
+                    let buf = try await request.body.collect(upTo: 4096)
+                    let obj = (try? JSONSerialization.jsonObject(with: Data(buf.readableBytesView))) as? [String: Any]
+                    if let r = obj?["range"] as? String { await engine.setMeshLayerRange(r) }
+                    let cur = await engine.meshLayerRange
+                    return Response(status: .ok, headers: swiftBuddyJSONHeaders, body: .init(byteBuffer: ByteBuffer(
+                        string: "{\"range\":\(swiftBuddyJSONString(cur)),\"note\":\"applies at next model load\"}")))
+                }
+                // POST /v1/mesh/forward  {"session","reset","tokens":[..] | "hidden":b64,"shape":[1,L,H],"top_k"}
+                router.post("/v1/mesh/forward") { request, _ -> Response in
+                    func fail(_ status: HTTPResponse.Status, _ msg: String) -> Response {
+                        Response(status: status, headers: swiftBuddyJSONHeaders, body: .init(byteBuffer: ByteBuffer(
+                            string: "{\"error\":\(swiftBuddyJSONString(msg))}")))
+                    }
+                    let buf = try await request.body.collect(upTo: 64 * 1024 * 1024)
+                    guard let obj = (try? JSONSerialization.jsonObject(with: Data(buf.readableBytesView))) as? [String: Any] else {
+                        return fail(.badRequest, "invalid JSON")
+                    }
+                    let hiddenData = (obj["hidden"] as? String).flatMap { Data(base64Encoded: $0) }
+                    do {
+                        let t0 = Date()
+                        let r = try await engine.meshForward(
+                            session: obj["session"] as? String ?? "default",
+                            reset: obj["reset"] as? Bool ?? false,
+                            tokens: (obj["tokens"] as? [NSNumber])?.map { $0.intValue },
+                            hidden: hiddenData,
+                            shape: (obj["shape"] as? [NSNumber])?.map { $0.intValue },
+                            topK: obj["top_k"] as? Int ?? 64)
+                        var out: [String: Any] = ["final": r.isFinalStage,
+                                                  "ms": Date().timeIntervalSince(t0) * 1000]
+                        if let h = r.hidden { out["hidden"] = h.base64EncodedString(); out["shape"] = r.shape }
+                        if let ids = r.topIds { out["top_ids"] = ids }
+                        if let lg = r.topLogits { out["top_logits"] = lg }
+                        let data = try JSONSerialization.data(withJSONObject: out)
+                        return Response(status: .ok, headers: swiftBuddyJSONHeaders,
+                                        body: .init(byteBuffer: ByteBuffer(bytes: data)))
+                    } catch {
+                        return fail(.internalServerError, "\(error)")
+                    }
+                }
+
                 // ── /v1/chat/completions (OpenAI-compatible, streaming + non-streaming) ──
                 router.post("/v1/chat/completions") { request, _ -> Response in
                     // 1. Parse body

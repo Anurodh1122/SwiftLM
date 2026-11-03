@@ -602,6 +602,12 @@ public final class InferenceEngine: ObservableObject {
 
             setLoadingState(progress: 0.22, stage: loadingStage)
 
+            // llm-mesh: apply the configured pipeline slice (e.g. "0:14") before weights load.
+            // Unset/invalid = full model, i.e. the app behaves exactly as before.
+            PipelineSliceConfig.shared.range = UserDefaults.standard.string(forKey: "mesh.layerRange")
+                .flatMap { PipelineSliceConfig.parse($0) }
+            meshState.reset()
+
             let loadedContainer: ModelContainer
             if architecture.supportsVision {
                 loadedContainer = try await VLMModelFactory.shared.loadContainer(
@@ -1242,6 +1248,86 @@ extension InferenceEngine {
             continuation.onTermination = { _ in task.cancel() }
         }
     }
+
+    // MARK: — llm-mesh pipeline stage
+
+    /// Per-session KV caches for the layers this process owns.
+    private final class MeshState: @unchecked Sendable {
+        var caches: [String: [KVCache]] = [:]
+        func reset() { caches.removeAll() }
+    }
+    private let meshState = MeshState()
+
+    public struct MeshForwardResult: Sendable {
+        /// Hidden state [1, L, H] as raw little-endian fp16 (nil on the final stage).
+        public var hidden: Data?
+        public var shape: [Int]
+        /// Final stage only: top-k token ids / logits of the last position, best first.
+        public var topIds: [Int]?
+        public var topLogits: [Float]?
+        public var isFinalStage: Bool
+    }
+
+    public enum MeshError: Error { case noModel, badInput(String) }
+
+    /// Run this process's layer slice. Stage 0 takes `tokens`; later stages take `hidden`.
+    public func meshForward(
+        session: String, reset: Bool, tokens: [Int]?, hidden: Data?, shape: [Int]?, topK: Int
+    ) async throws -> MeshForwardResult {
+        guard let container else { throw MeshError.noModel }
+        let state = meshState
+        return try await container.perform { ctx in
+            // Validate against this process's stage before touching MLX (a wrong-shaped
+            // input would otherwise trap inside the model instead of returning an error).
+            let firstStage = (PipelineSliceConfig.shared.range?.lowerBound ?? 0) == 0
+            if firstStage {
+                guard let t = tokens, !t.isEmpty else {
+                    throw MeshError.badInput("this is stage 0: send non-empty `tokens`")
+                }
+            } else {
+                guard let h = hidden, let sh = shape, sh.count == 3, sh[0] == 1, sh[1] > 0, sh[2] > 0,
+                      h.count == sh[0] * sh[1] * sh[2] * 2 else {
+                    throw MeshError.badInput("this is stage >0: send `hidden` (fp16) with matching `shape` [1,L,H]")
+                }
+            }
+            let input: MLXArray
+            if let tokens {
+                input = MLXArray(tokens.map { Int32($0) }).reshaped(1, -1)
+            } else if let hidden, let shape, shape.count == 3 {
+                input = MLXArray(hidden, shape, dtype: .float16)
+            } else {
+                throw MeshError.badInput("need tokens (stage 0) or hidden+shape [1,L,H]")
+            }
+            if reset || state.caches[session] == nil {
+                state.caches[session] = try ctx.model.newCache(parameters: nil)
+            }
+            let cache = state.caches[session]!
+            let out = ctx.model(input, cache: cache)
+            // Final stage output is logits [1, L, V]; earlier stages output hidden [1, L, H].
+            let isFinal = PipelineSliceConfig.shared.effectiveRange(total: cache.count)
+                .map { $0.upperBound >= cache.count } ?? true
+            if isFinal {
+                let last = out[0, -1].asType(.float32)
+                let k = max(1, min(topK, last.dim(-1)))
+                let order = argSort(-last)[0 ..< k]
+                let vals = take(last, order)
+                eval(order, vals)
+                return MeshForwardResult(
+                    hidden: nil, shape: [], topIds: order.asArray(Int32.self).map { Int($0) },
+                    topLogits: vals.asArray(Float.self), isFinalStage: true)
+            }
+            let h = out.asType(.float16)
+            eval(h)
+            return MeshForwardResult(
+                hidden: h.asData(), shape: h.shape, topIds: nil, topLogits: nil, isFinalStage: false)
+        }
+    }
+
+    /// Persist the layer slice ("a:b", or "" for the full model); applied at next model load.
+    public func setMeshLayerRange(_ spec: String) {
+        UserDefaults.standard.set(spec, forKey: "mesh.layerRange")
+    }
+    public var meshLayerRange: String { UserDefaults.standard.string(forKey: "mesh.layerRange") ?? "" }
 
     public func stopGeneration() {
         if isGenerationActive { stopRequested = true }

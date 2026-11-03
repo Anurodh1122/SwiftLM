@@ -3,4 +3,4 @@
 	url = https://github.com/SharpAI/mlx-swift.git
 [submodule "mlx-swift-lm"]
 	path = mlx-swift-lm
-	url = https://github.com/SharpAI/mlx-swift-lm.git
+	url = https://github.com/Anurodh1122/mlx-swift-lm.git
