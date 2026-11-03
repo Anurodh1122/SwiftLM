@@ -15,6 +15,13 @@ import UIKit
 import os
 #endif
 
+/// llm-mesh: per-session KV caches for the layers this process owns.
+private final class MeshState: @unchecked Sendable {
+    var caches: [String: [KVCache]] = [:]
+    func reset() { caches.removeAll() }
+}
+private let meshStateShared = MeshState()
+
 // MARK: — Hub Downloader bridge (Downloader protocol conformance over HubApi)
 
 private struct HubDownloader: Downloader, Sendable {
@@ -606,7 +613,7 @@ public final class InferenceEngine: ObservableObject {
             // Unset/invalid = full model, i.e. the app behaves exactly as before.
             PipelineSliceConfig.shared.range = UserDefaults.standard.string(forKey: "mesh.layerRange")
                 .flatMap { PipelineSliceConfig.parse($0) }
-            meshState.reset()
+            meshStateShared.reset()
 
             let loadedContainer: ModelContainer
             if architecture.supportsVision {
@@ -1251,13 +1258,6 @@ extension InferenceEngine {
 
     // MARK: — llm-mesh pipeline stage
 
-    /// Per-session KV caches for the layers this process owns.
-    private final class MeshState: @unchecked Sendable {
-        var caches: [String: [KVCache]] = [:]
-        func reset() { caches.removeAll() }
-    }
-    private let meshState = MeshState()
-
     public struct MeshForwardResult: Sendable {
         /// Hidden state [1, L, H] as raw little-endian fp16 (nil on the final stage).
         public var hidden: Data?
@@ -1275,7 +1275,7 @@ extension InferenceEngine {
         session: String, reset: Bool, tokens: [Int]?, hidden: Data?, shape: [Int]?, topK: Int
     ) async throws -> MeshForwardResult {
         guard let container else { throw MeshError.noModel }
-        let state = meshState
+        let state = meshStateShared
         return try await container.perform { ctx in
             // Validate against this process's stage before touching MLX (a wrong-shaped
             // input would otherwise trap inside the model instead of returning an error).
